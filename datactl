@@ -161,7 +161,7 @@ cmd_pull() {
 
 cmd_preflight() {
   cmd_configure
-  (($(<"/proc/sys/vm/max_map_count") >= 262144)) || die "Host vm.max_map_count must be at least 262144 for Elasticsearch"
+  (($(<"/proc/sys/vm/max_map_count") >= 262144)) || echo "Note: vm.max_map_count is below 262144; Elasticsearch runs without mmap storage"
   cmd_pull
   compose config --quiet
 }

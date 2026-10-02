@@ -39,6 +39,12 @@ class RenderTests(unittest.TestCase):
         self.assertEqual((self.root / 'generated/mongo_credentials').stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / 'generated').stat().st_mode & 0o777, 0o700)
 
+    def test_low_max_map_count_disables_mmap(self):
+        import json
+        render.render(self.root, self.env, self.root, map_count=65530)
+        self.assertFalse(json.loads((self.root / 'generated/elasticsearch.yml').read_text())['node.store.allow_mmap'])
+        render.render(self.root, self.env, self.root, map_count=262144)
+        self.assertNotIn('node.store.allow_mmap', json.loads((self.root / 'generated/elasticsearch.yml').read_text()))
     def test_credentials_cannot_silently_rotate(self):
         render.render(self.root, self.env, self.root)
         self.env['REDIS_PASSWORD'] = 'a-different-password'

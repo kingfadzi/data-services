@@ -65,9 +65,17 @@ def write_json(path, value):
 TLS_FILES = ('ca.pem', 'server.crt', 'server.key', 'mongo.pem')
 
 
-def render(root, env, host_root, tls_dir=None):
+def max_map_count():
+    try:
+        return int(Path('/proc/sys/vm/max_map_count').read_text())
+    except (OSError, ValueError):
+        return 0
+
+
+def render(root, env, host_root, tls_dir=None, map_count=None):
     """root: directory holding generated/. host_root: the same directory as seen by the Docker host.
-    tls_dir: where TLS files are visible here when TLS is enabled; defaults to TLS_DIR under root."""
+    tls_dir: where TLS files are visible here when TLS is enabled; defaults to TLS_DIR under root.
+    map_count: host vm.max_map_count; below 262144 Elasticsearch runs without mmap (no sysctl needed)."""
     generated = root / 'generated'
     generated.mkdir(exist_ok=True)
     cred_path = generated / 'credentials.json'
@@ -104,6 +112,10 @@ def render(root, env, host_root, tls_dir=None):
           'discovery.type': 'single-node', 'xpack.security.enabled': True,
           'xpack.security.enrollment.enabled': False, 'xpack.security.http.ssl.enabled': tls,
           'xpack.security.transport.ssl.enabled': False}
+    if (max_map_count() if map_count is None else map_count) < 262144:
+        # Locked-down hosts cannot raise vm.max_map_count; niofs storage removes the requirement.
+        es['node.store.allow_mmap'] = False
+        print('vm.max_map_count below 262144: Elasticsearch configured without mmap (node.store.allow_mmap=false)')
     if tls:
         es.update({'xpack.security.http.ssl.key': 'tls/server.key', 'xpack.security.http.ssl.certificate': 'tls/server.crt',
                    'xpack.security.http.ssl.certificate_authorities': ['tls/ca.pem']})

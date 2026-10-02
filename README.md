@@ -18,7 +18,7 @@
 ```sh
 ./datactl configure     # render generated/ (secrets, configs, compose.env); stage TLS files
 ./datactl pull          # pull the three images if missing
-./datactl preflight     # configure + pull + vm.max_map_count >= 262144 + compose model check
+./datactl preflight     # configure + pull + compose model check
 ./datactl install
 ./datactl verify        # container health status
 ./datactl status
@@ -31,6 +31,7 @@
 ## How the official images are configured
 
 - Elasticsearch: rendered `elasticsearch.yml` mounted over the image's config; `ELASTIC_PASSWORD_FILE` points at the generated secret; single node, security on, transport TLS off.
+- No host sysctl is required. When `vm.max_map_count` is below 262144, `configure` sets `node.store.allow_mmap: false` so Elasticsearch uses regular file I/O (Elastic's documented fallback; slightly lower read performance). Raise the sysctl and re-run `configure` to use mmap.
 - MongoDB: `mongod --bind_ip_all --auth` plus TLS arguments from `compose.env`; root user from `MONGO_INITDB_ROOT_*_FILE`; ClearML user and roles (`readWrite`/`dbAdmin` on `backend` and `auth`, `clusterMonitor`) from the init script. Init runs only on an empty volume.
 - Redis: `redis-server /run/config/redis.conf` with the rendered config; AOF on, password required, TLS-only port when enabled.
 - Secrets and config files under `generated/` are mode 644 so the image service users (uid 1000 and 999) can read them; `generated/` itself is mode 700.
