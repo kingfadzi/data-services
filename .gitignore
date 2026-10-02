@@ -1,7 +1,7 @@
 .env
 generated/
 dist/
-config/ca.pem
+config/tls-ca-bundle.zip
 config/tls/
 __pycache__/
 config/tls-ca/

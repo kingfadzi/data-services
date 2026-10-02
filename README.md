@@ -15,7 +15,7 @@
 - `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`: proxy for build-time RPM downloads; blank means no proxy.
 - RPMs install from the repositories baked into `RUNTIME_BASE_IMAGE`. The base must carry the Elasticsearch, MongoDB and Redis vendor repos; `containers/base-example/` shows how to derive such an image. Remi signs with more than one key; list all of them in `gpgkey`.
 - `*_PACKAGE`: exact RPM specs. A module stream such as `@redis:remi-8.2` is accepted.
-- `CA_BUNDLE`: CA file copied into the images (writable if you append).
+- `TLS_CA_BUNDLE_URL`: URL of a zip holding the internally signed CA certificates (`.pem`/`.crt`/`.cer`). Blank means no private CA is required. `build` downloads it to `config/tls-ca-bundle.zip` (curl inside the base image, through the proxy settings) and installs it into the images' OS trust. A zip placed there by hand is used when the URL is blank.
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
 
 ```sh
@@ -47,7 +47,7 @@
 - Set `TLS_ENABLED=true`. Put `ca.pem`, `server.crt`, `server.key` and `mongo.pem` (key + cert) in `TLS_DIR`. Keep the CA key elsewhere.
 - Server certificate SANs must include `localhost` (health probes) and `DATA_HOST` (clients). Certificates need subject and authority key identifiers; a CA without them failed verification in the lab.
 - After changing certificates, restart the containers; entrypoints copy TLS files at start.
-- Clients must trust the CA. For ClearML, append it to its `config/ca.pem` and rebuild.
+- Clients must trust the CA. For ClearML, include it in the CA bundle zip behind its `TLS_CA_BUNDLE_URL` and rebuild.
 - Verified in the lab: health probes, ClearML preflight and SDK round trip over TLS; wrong passwords and an untrusted CA rejected.
 
 ## Transfer

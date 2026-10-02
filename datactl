@@ -77,6 +77,37 @@ proxy_args() {
   done
 }
 
+fetch_ca_bundle() {
+  # Stage config/tls-ca-bundle.zip for the build. Blank URL and no file: empty placeholder, no private CA.
+  local url=${ENV[TLS_CA_BUNDLE_URL]-} target=$ROOT/config/tls-ca-bundle.zip base=$1
+  mkdir -p "$ROOT/config"
+  if [[ -n $url ]]; then
+    [[ $url == http://* || $url == https://* ]] || die "TLS_CA_BUNDLE_URL must be an http(s) URL"
+    local -a proxy=()
+    local key
+    for key in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+      [[ -n ${ENV[$key]-} ]] && proxy+=(-e "$key=${ENV[$key]}" -e "${key,,}=${ENV[$key]}")
+    done
+    docker run --rm --user "$UID:$(id -g)" "${proxy[@]}" -v "$ROOT/config:/out" "$base" \
+      curl -fsSL --proto '=http,https' -o /out/tls-ca-bundle.zip.part "$url" || die "Could not download TLS_CA_BUNDLE_URL"
+    mv "$ROOT/config/tls-ca-bundle.zip.part" "$target"
+  fi
+  if [[ -s $target ]]; then
+    docker run --rm -v "$target:/bundle.zip:ro" "$base" python3 -c '
+import sys, zipfile
+try:
+    names = zipfile.ZipFile("/bundle.zip").namelist()
+except zipfile.BadZipFile:
+    sys.exit("config/tls-ca-bundle.zip is not a zip archive")
+if not any(n.lower().endswith((".pem", ".crt", ".cer")) for n in names):
+    sys.exit("CA bundle contains no .pem/.crt/.cer certificates")
+print(f"CA bundle: {sum(n.lower().endswith((chr(46)+chr(112)+chr(101)+chr(109), chr(46)+chr(99)+chr(114)+chr(116), chr(46)+chr(99)+chr(101)+chr(114))) for n in names)} certificate file(s)")' || die "Invalid CA bundle"
+  else
+    : >"$target"
+    echo "No CA bundle configured; images use system trust"
+  fi
+}
+
 check_image() {
   local image=$1 registry last
   if [[ -n ${ENV[ALLOWED_HOSTS]-} ]]; then
@@ -113,13 +144,11 @@ cmd_configure() {
 }
 
 cmd_build() {
-  local ca base service image key
-  ca=$(abs "$(need CA_BUNDLE)")
-  [[ -f $ca ]] || die "CA_BUNDLE must exist; provide your site CA bundle"
-  [[ $ca -ef $ROOT/config/ca.pem ]] || cp "$ca" "$ROOT/config/ca.pem"
+  local base service image key
   base=$(need RUNTIME_BASE_IMAGE)
   check_image "$base"
   docker image inspect "$base" >/dev/null 2>&1 || die "Base image not present locally: $base"
+  fetch_ca_bundle "$base"
   local -a args=()
   for key in RUNTIME_BASE_IMAGE ELASTIC_PACKAGE MONGO_PACKAGE MONGOSH_PACKAGE REDIS_PACKAGE; do
     args+=(--build-arg "$key=$(need "$key")")
