@@ -9,7 +9,7 @@
 ## Setup
 
 - Copy `.env.example` to `.env`. Literal values, mode 600.
-- `RUNTIME_BASE_IMAGE`: EL9 base, present locally, tagged from an `ALLOWED_HOSTS` registry. Also used as the toolbox for `configure`.
+- `RUNTIME_BASE_IMAGE`: EL9 base, pulled when not present locally. Also used as the toolbox for `configure`.
 - `.env` values are literal; write `$` as `$$` because Compose interpolates `.env`.
 - `ALLOWED_HOSTS`: optional allowlist of image registries; blank disables the check.
 - `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`: proxy for build-time RPM downloads; blank means no proxy.

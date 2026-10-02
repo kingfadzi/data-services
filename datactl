@@ -121,6 +121,13 @@ check_image() {
   fi
 }
 
+ensure_image() {
+  # Pull a base image from its registry when it is not present locally.
+  docker image inspect "$1" >/dev/null 2>&1 && return 0
+  echo "Pulling $1"
+  docker pull "$1" >/dev/null || die "Could not pull base image: $1"
+}
+
 compose() {
   [[ -f $ROOT/generated/compose.env ]] || die "Run configure first"
   docker compose --project-directory "$ROOT" --env-file "$ENV_PATH" --env-file "$ROOT/generated/compose.env" \
@@ -131,7 +138,7 @@ cmd_configure() {
   local base tls
   base=$(need RUNTIME_BASE_IMAGE)
   check_image "$base"
-  docker image inspect "$base" >/dev/null 2>&1 || die "Base image not present locally: $base"
+  ensure_image "$base"
   mkdir -p "$ROOT/generated"
   chmod 700 "$ROOT/generated"
   local -a mounts=(-v "$ENV_PATH:/work/.env:ro" -v "$ROOT/generated:/work/generated" -v "$ROOT/containers/tools:/tools:ro")
@@ -147,7 +154,7 @@ cmd_build() {
   local base service image key
   base=$(need RUNTIME_BASE_IMAGE)
   check_image "$base"
-  docker image inspect "$base" >/dev/null 2>&1 || die "Base image not present locally: $base"
+  ensure_image "$base"
   fetch_ca_bundle "$base"
   local -a args=()
   for key in RUNTIME_BASE_IMAGE ELASTIC_PACKAGE MONGO_PACKAGE MONGOSH_PACKAGE REDIS_PACKAGE; do
