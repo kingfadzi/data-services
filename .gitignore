@@ -5,3 +5,4 @@ config/yum.repo
 config/ca.pem
 config/tls/
 __pycache__/
+config/tls-ca/
