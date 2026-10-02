@@ -2,8 +2,8 @@
 
 - Single-host Docker Compose stack: Elasticsearch, MongoDB and Redis for ClearML.
 - Elasticsearch and MongoDB run the official vendor images pulled from the configured registry (Nexus upstream, public registries in the lab).
-- Redis is built locally by `datactl build` from the RPM in the base image's repositories (`REDIS_BASE_IMAGE`, `REDIS_PACKAGE`); there is no open-source Redis image in the upstream registry.
-- Host needs only bash, coreutils and the docker CLI. `datactl` is a bash script; configuration rendering and TLS staging run in a toolbox container.
+- Redis is built locally by `datactl build` from the RPM in the base image's repositories (`BASE_IMAGE`, `REDIS_PACKAGE`); there is no open-source Redis image in the upstream registry.
+- Host needs only bash, coreutils and the docker CLI. `datactl` is a bash script; configuration rendering and secret staging run in a container from `BASE_IMAGE`.
 - `compose.yaml` is static and interpolated from `.env` plus `generated/compose.env`.
 - Verified versions: Elasticsearch 8.17.2, MongoDB 8.0.11, Redis from the EL9 AppStream RPM.
 
@@ -11,8 +11,8 @@
 
 - Copy `.env.example` to `.env`. Literal values, mode 600. Write `$` as `$$` because Compose interpolates `.env`.
 - `ELASTIC_IMAGE`, `MONGO_IMAGE`: full references incl. registry and tag. Pulled when not present locally. `:latest` is rejected.
-- `REDIS_BASE_IMAGE`: EL9 base whose repositories provide `REDIS_PACKAGE` (`redis` for the AppStream default, `@redis:7` for the module stream). `REDIS_IMAGE`: tag for the built image. `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` reach the build; blank means no proxy.
-- `TOOLBOX_IMAGE`: any image with `python3` and `sh` (an EL9 base works). Used for rendering and TLS staging only.
+- `REDIS_PACKAGE`: RPM spec from `BASE_IMAGE`'s repositories, unpinned (`redis` for the AppStream default, `@redis:7` for the module stream). `REDIS_IMAGE`: tag for the built image. `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` reach the build; blank means no proxy.
+- `BASE_IMAGE`: the one blessed EL9 base image. Used as the toolbox (needs `python3` and `sh`) and as the base of the Redis build.
 - `ALLOWED_HOSTS`: optional allowlist of image registries; blank disables the check.
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
 - `MONGO_ROOT_USERNAME`/`MONGO_ROOT_PASSWORD`: MongoDB administrator created by the official image on first start. `MONGO_USERNAME`/`MONGO_PASSWORD`: the ClearML user, created by `init/mongo-init.js` on first start.

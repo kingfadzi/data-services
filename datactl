@@ -138,7 +138,7 @@ stage_private() {
 
 cmd_configure() {
   local toolbox tls
-  toolbox=$(need TOOLBOX_IMAGE)
+  toolbox=$(need BASE_IMAGE)
   check_image "$toolbox"
   ensure_image "$toolbox"
   mkdir -p "$ROOT/generated"
@@ -175,7 +175,7 @@ cmd_pull() {
 
 cmd_build() {
   local base image
-  base=$(need REDIS_BASE_IMAGE)
+  base=$(need BASE_IMAGE)
   check_image "$base"
   ensure_image "$base"
   image=$(need REDIS_IMAGE)
@@ -183,7 +183,7 @@ cmd_build() {
   local -a proxy=()
   mapfile -t proxy < <(proxy_args)
   docker build --pull=false --network "${ENV[BUILD_NETWORK]:-default}" -f "$ROOT/containers/Containerfile" \
-    --build-arg "REDIS_BASE_IMAGE=$base" --build-arg "REDIS_PACKAGE=$(need REDIS_PACKAGE)" --build-arg "REDIS_UID=${ENV[REDIS_UID]:-1001}" \
+    --build-arg "BASE_IMAGE=$base" --build-arg "REDIS_PACKAGE=$(need REDIS_PACKAGE)" --build-arg "REDIS_UID=${ENV[REDIS_UID]:-1001}" \
     "${proxy[@]}" -t "$image" "$ROOT/containers"
 }
 

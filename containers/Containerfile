@@ -1,6 +1,6 @@
 # Redis from the RPM repositories baked into the base image. MongoDB and Elasticsearch use vendor images.
-ARG REDIS_BASE_IMAGE
-FROM ${REDIS_BASE_IMAGE}
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 ARG REDIS_PACKAGE=redis
 ARG REDIS_UID=1001
 # Fixed uid so staged secrets and TLS files (owned by REDIS_UID) are readable; the RPM reuses the existing user.
