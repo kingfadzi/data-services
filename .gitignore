@@ -1,0 +1,7 @@
+.env
+generated/
+dist/
+config/internal.repo
+config/ca.pem
+config/tls/
+__pycache__/

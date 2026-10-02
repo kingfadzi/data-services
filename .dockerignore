@@ -1,0 +1,7 @@
+.git
+.env
+generated
+dist
+**/__pycache__
+config
+!config/ca.pem

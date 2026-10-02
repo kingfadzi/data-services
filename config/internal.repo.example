@@ -1,0 +1,7 @@
+[internal-el9]
+name=Internal EL9 packages
+baseurl=https://nexus.butterflycluster.com/repository/el9/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-9
+# UBI deployments: replace this file with internal RHEL/UBI repositories and keys.

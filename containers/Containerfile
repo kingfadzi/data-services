@@ -1,0 +1,37 @@
+ARG RUNTIME_BASE_IMAGE
+FROM ${RUNTIME_BASE_IMAGE} AS base
+USER root
+COPY config/ca.pem /etc/pki/ca-trust/source/anchors/site.crt
+COPY containers/install-rpms.sh /tmp/install-rpms.sh
+RUN update-ca-trust
+RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh shadow-utils util-linux-core curl procps-ng
+
+FROM base AS elasticsearch
+ARG ELASTIC_PACKAGE
+ENV ES_PATH_CONF=/usr/share/elasticsearch/config ES_JAVA_OPTS="-Xms1g -Xmx1g"
+RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh "$ELASTIC_PACKAGE" && \
+    mkdir -p /usr/share/elasticsearch/config /usr/share/elasticsearch/data /usr/share/elasticsearch/logs && \
+    cp -a /etc/elasticsearch/. /usr/share/elasticsearch/config/ && \
+    chown -R elasticsearch:elasticsearch /usr/share/elasticsearch
+COPY containers/elastic-entrypoint.sh /usr/local/bin/start-elastic
+COPY containers/health.sh /usr/local/bin/health
+RUN chmod +x /usr/local/bin/start-elastic /usr/local/bin/health
+ENTRYPOINT ["/usr/local/bin/start-elastic"]
+
+FROM base AS mongo
+ARG MONGO_PACKAGE
+ARG MONGOSH_PACKAGE
+RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh "$MONGO_PACKAGE" "$MONGOSH_PACKAGE" && mkdir -p /data/db
+COPY containers/mongo-entrypoint.sh /usr/local/bin/start-mongo
+COPY containers/mongo-init.js /usr/local/lib/mongo-init.js
+COPY containers/health.sh /usr/local/bin/health
+RUN chmod +x /usr/local/bin/start-mongo /usr/local/bin/health
+ENTRYPOINT ["/usr/local/bin/start-mongo"]
+
+FROM base AS redis
+ARG REDIS_PACKAGE
+RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh "$REDIS_PACKAGE" && mkdir -p /data
+COPY containers/redis-entrypoint.sh /usr/local/bin/start-redis
+COPY containers/health.sh /usr/local/bin/health
+RUN chmod +x /usr/local/bin/start-redis /usr/local/bin/health
+ENTRYPOINT ["/usr/local/bin/start-redis"]

@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+import argparse
+import json
+from pathlib import Path
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+from urllib.parse import quote
+from common import Error, boolean, check_repos, compose, docker_build, env_file, local_image, need, private_write, run, sha, write_json
+ROOT = Path(__file__).resolve().parent
+
+def images(env):
+    return {name: need(env,key) for name,key in [('elasticsearch','ELASTIC_IMAGE'),('mongo','MONGO_IMAGE'),('redis','REDIS_IMAGE')]}
+
+def configure(env):
+    generated = ROOT / 'generated'
+    cred_path = generated / 'credentials.json'
+    old = json.loads(cred_path.read_text()) if cred_path.exists() else {}
+    credentials = {}
+    for key in ('ELASTIC_PASSWORD','MONGO_PASSWORD','REDIS_PASSWORD'):
+        requested = env.get(key, '')
+        value = requested or old.get(key) or secrets.token_hex(32)
+        if old.get(key) and value != old[key]:
+            raise Error(f'{key}: rotating existing credentials requires an explicit database operation')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{16,}',value):
+            raise Error(f'{key}: use at least 16 letters, digits, underscores or hyphens')
+        credentials[key] = value
+    username = need(env,'MONGO_USERNAME')
+    if old.get('MONGO_USERNAME',username) != username:
+        raise Error('Changing an initialized MongoDB username requires an explicit database operation')
+    credentials['MONGO_USERNAME'] = username
+    write_json(cred_path,credentials)
+    for key,filename in [('ELASTIC_PASSWORD','elastic_password'),('REDIS_PASSWORD','redis_password')]:
+        private_write(generated/filename,credentials[key])
+    write_json(generated/'mongo_credentials',{'username':username,'password':credentials['MONGO_PASSWORD']})
+    tls = boolean(env,'TLS_ENABLED')
+    tls_path = (ROOT/need(env,'TLS_DIR')).resolve()
+    if tls:
+        for filename in ('ca.pem','server.crt','server.key','mongo.pem'):
+            if not (tls_path/filename).is_file():
+                raise Error(f'TLS file missing: {filename}')
+    es = {'cluster.name':'clearml', 'node.name':'clearml-data', 'network.host':'0.0.0.0',
+          'discovery.type':'single-node','path.data':'/usr/share/elasticsearch/data',
+          'path.logs':'/usr/share/elasticsearch/logs', 'xpack.security.enabled':True,
+          'xpack.security.enrollment.enabled':False,'xpack.security.http.ssl.enabled':tls,
+          'xpack.security.transport.ssl.enabled':False}
+    if tls:
+        es.update({'xpack.security.http.ssl.key':'tls/server.key','xpack.security.http.ssl.certificate':'tls/server.crt',
+                   'xpack.security.http.ssl.certificate_authorities':['tls/ca.pem']})
+    write_json(generated/'elasticsearch.yml',es)
+    mongo = {'storage':{'dbPath':'/data/db'},'net':{'bindIp':'0.0.0.0','port':27017},'security':{'authorization':'enabled'}}
+    if tls:
+        mongo['net']['tls'] = {'mode':'requireTLS','certificateKeyFile':'/run/service-tls/mongo.pem','CAFile':'/run/service-tls/ca.pem','allowConnectionsWithoutCertificates':True}
+    write_json(generated/'mongod.json',mongo)
+    redis = ['bind 0.0.0.0','protected-mode yes','dir /data','appendonly yes',f'requirepass {credentials["REDIS_PASSWORD"]}']
+    redis += ['port 0','tls-port 6379','tls-cert-file /run/service-tls/server.crt','tls-key-file /run/service-tls/server.key','tls-ca-cert-file /run/service-tls/ca.pem','tls-auth-clients no'] if tls else ['port 6379']
+    private_write(generated/'redis.conf','\n'.join(redis)+'\n')
+    scheme = 'https' if tls else 'http'
+    private_write(generated/'elastic-health.conf',f'url = "{scheme}://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=3s"\nuser = "elastic:{credentials["ELASTIC_PASSWORD"]}"\n'+('cacert = "/run/tls/ca.pem"\n' if tls else ''))
+    services = {}
+    secret_names = {'elasticsearch':['elastic_password'],'mongo':['mongo_credentials'],'redis':['redis_password']}
+    for name,image in images(env).items():
+        path = {'elasticsearch':'/usr/share/elasticsearch/data','mongo':'/data/db','redis':'/data'}[name]
+        port_key,port = {'elasticsearch':('ELASTIC_PORT',9200),'mongo':('MONGO_PORT',27017),'redis':('REDIS_PORT',6379)}[name]
+        services[name] = {'image':image,'pull_policy':'never','restart':'unless-stopped',
+            'ports':[f'{need(env,"BIND_ADDRESS")}:{need(env,port_key)}:{port}'],
+            'environment':{'TLS_ENABLED':str(tls).lower()},
+            'volumes':[f'{name}-data:{path}'],
+            'secrets':secret_names[name],
+            'healthcheck':{'test':['CMD','/usr/local/bin/health',name],'interval':'10s','timeout':'10s','retries':30,'start_period':'60s'}}
+        config_files = {'elasticsearch':['elasticsearch.yml','elastic-health.conf'], 'mongo':['mongod.json'], 'redis':['redis.conf']}[name]
+        for filename in config_files:
+            services[name]['volumes'].append(f'{generated.resolve()}/{filename}:/run/config/{filename}:ro,z')
+        if tls:
+            services[name]['volumes'].append(f'{tls_path}:/run/tls:ro,z')
+    services['elasticsearch']['environment']['ES_JAVA_OPTS'] = f'-Xms{need(env,"ELASTIC_HEAP")} -Xmx{need(env,"ELASTIC_HEAP")}'
+    services['elasticsearch']['ulimits'] = {'nofile':{'soft':65536,'hard':65536}}
+    # Service daemons need read access to configuration; host directory remains private.
+    generated.chmod(0o700)
+    for name in ('elasticsearch.yml','mongod.json','redis.conf'):
+        (generated/name).chmod(0o644)
+    write_json(generated/'compose.json',{'name':'data-services','services':services,
+        'volumes':{name+'-data':{} for name in services},
+        'secrets':{name:{'file':str((generated/name).resolve())} for names in secret_names.values() for name in names}})
+    host = need(env,'DATA_HOST')
+    query = 'authSource=admin' + ('&tls=true&tlsCAFile=/etc/pki/tls/certs/ca-bundle.crt' if tls else '')
+    user = quote(username,safe=''); password = quote(credentials['MONGO_PASSWORD'],safe='')
+    values = {'MONGO_BACKEND_URI':f'mongodb://{user}:{password}@{host}:{need(env,"MONGO_PORT")}/backend?{query}',
+              'MONGO_AUTH_URI':f'mongodb://{user}:{password}@{host}:{need(env,"MONGO_PORT")}/auth?{query}',
+              'ELASTICSEARCH_URLS':f'{scheme}://{host}:{need(env,"ELASTIC_PORT")}',
+              'ELASTICSEARCH_USERNAME':'elastic','ELASTICSEARCH_PASSWORD':credentials['ELASTIC_PASSWORD'],
+              'REDIS_HOST':host,'REDIS_PORT':need(env,'REDIS_PORT'),'REDIS_PASSWORD':credentials['REDIS_PASSWORD'],'REDIS_TLS':str(tls).lower()}
+    private_write(generated/'clearml.env','\n'.join(f'{key}={value}' for key,value in values.items())+'\n')
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('command',choices=['configure','build','preflight','install','status','verify','bundle','load'])
+    parser.add_argument('--env',default='.env')
+    args = parser.parse_args(); env = env_file(ROOT/args.env)
+    if args.command == 'configure':
+        configure(env)
+        print('Rendered generated/compose.json; connection settings: generated/clearml.env (secret)')
+    elif args.command == 'build':
+        repo = check_repos(ROOT,env)
+        ca = ROOT/need(env,'CA_BUNDLE')
+        if ca.resolve() != (ROOT/'config/ca.pem').resolve(): shutil.copyfile(ca,ROOT/'config/ca.pem')
+        run('docker','image','inspect',need(env,'RUNTIME_BASE_IMAGE'),stdout=subprocess.DEVNULL)
+        build_args = {key:need(env,key) for key in ('RUNTIME_BASE_IMAGE','ELASTIC_PACKAGE','MONGO_PACKAGE','MONGOSH_PACKAGE','REDIS_PACKAGE')}
+        for name,image in images(env).items():
+            local_image(image,env)
+            docker_build(ROOT,env,'containers/Containerfile',image,build_args,{'yum_repo':repo},name)
+    elif args.command in ('preflight','install'):
+        configure(env)
+        if int(Path('/proc/sys/vm/max_map_count').read_text()) < 262144:
+            raise Error('Host vm.max_map_count must be at least 262144 for Elasticsearch')
+        for image in images(env).values(): run('docker','image','inspect',image,stdout=subprocess.DEVNULL)
+        compose(ROOT,'config','--quiet')
+        if args.command == 'install': compose(ROOT,'up','-d','--no-build','--pull','never','--wait','--wait-timeout','300')
+    elif args.command == 'status': compose(ROOT,'ps')
+    elif args.command == 'verify':
+        for name in images(env): compose(ROOT,'exec','-T',name,'/usr/local/bin/health',name)
+    elif args.command == 'bundle':
+        import tarfile
+        path = ROOT/'dist'; path.mkdir(exist_ok=True)
+        run('docker','save','-o',path/'images.tar',*images(env).values())
+        with tarfile.open(path/'installer.tar.gz','w:gz') as bundle:
+            for name in ('datactl','common.py','containers','.env.example','config/internal.repo.example','README.md'):
+                bundle.add(ROOT/name,arcname=name)
+        write_json(path/'checksums.json',{name:sha(path/name) for name in ('images.tar','installer.tar.gz')})
+    elif args.command == 'load':
+        path = ROOT/'dist/images.tar'
+        checks = json.loads((path.parent/'checksums.json').read_text())
+        if sha(path) != checks[path.name]: raise Error('Image archive checksum mismatch')
+        run('docker','load','-i',path)
+if __name__ == '__main__':
+    try: main()
+    except (Error,OSError,ValueError,subprocess.CalledProcessError) as error:
+        print(f'Error: {error if isinstance(error,Error) else type(error).__name__}',file=sys.stderr); sys.exit(1)
