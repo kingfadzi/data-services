@@ -81,6 +81,12 @@ check_image() {
   fi
 }
 
+output_tag() {
+  # Locally built images are never pushed; only a versioned tag is required, no registry.
+  local last=${1##*/}
+  [[ $last == *:* && $last != *:latest ]] || die "Use a versioned tag for the built image: $1"
+}
+
 ensure_image() {
   # Pull an image from its registry when it is not present locally.
   docker image inspect "$1" >/dev/null 2>&1 && return 0
@@ -180,7 +186,7 @@ cmd_build() {
   check_image "$base"
   ensure_image "$base"
   image=$(need REDIS_IMAGE)
-  check_image "$image"
+  output_tag "$image"
   local -a proxy=()
   mapfile -t proxy < <(proxy_args)
   docker build --pull=false --network "${ENV[BUILD_NETWORK]:-default}" -f "$ROOT/containers/Containerfile" \

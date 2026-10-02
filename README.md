@@ -11,7 +11,7 @@
 
 - Copy `.env.example` to `.env`. Literal values, mode 600. Write `$` as `$$` because Compose interpolates `.env`.
 - `ELASTIC_IMAGE`, `MONGO_IMAGE`: full references incl. registry and tag. Pulled when not present locally. `:latest` is rejected.
-- `REDIS_PACKAGE`: RPM spec from `BASE_IMAGE`'s repositories, unpinned (`redis` for the AppStream default, `@redis:7` for the module stream). `REDIS_IMAGE`: tag for the built image. `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` reach the build; blank means no proxy.
+- `REDIS_PACKAGE`: RPM spec from `BASE_IMAGE`'s repositories, unpinned (`redis` for the AppStream default, `@redis:7` for the module stream). `REDIS_IMAGE`: tag for the built image (never pushed; any name with a versioned tag). `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` reach the build; blank means no proxy.
 - `BASE_IMAGE`: the one blessed EL9 base image. Used as the toolbox (needs `python3` and `sh`) and as the base of the Redis build.
 - `ALLOWED_HOSTS`: optional allowlist of image registries; blank disables the check.
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
