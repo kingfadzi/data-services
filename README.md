@@ -18,14 +18,13 @@
 - `MONGO_ROOT_USERNAME`/`MONGO_ROOT_PASSWORD`: MongoDB administrator created by the official image on first start. `MONGO_USERNAME`/`MONGO_PASSWORD`: the ClearML user, created by `init/mongo-init.js` on first start.
 
 ```sh
-./datactl configure     # render generated/ (secrets, configs, compose.env); stage TLS files
-./datactl pull          # pull Elasticsearch and MongoDB if missing
-./datactl build         # build the Redis image from the RPM
-./datactl preflight     # configure + pull + compose model check
-./datactl install
-./datactl verify        # container health status
+./datactl install       # runs the whole chain: configure, pull, build, preflight, install
+./datactl verify        # the chain plus container health status
 ./datactl status
 ```
+
+- Chain commands are cumulative: `configure` (render secrets, configs, compose.env; stage TLS files), `pull` (Elasticsearch and MongoDB images if missing), `build` (Redis image from the RPM), `preflight` (compose model check), `install`, `verify`. Each runs every earlier step; all steps are idempotent.
+- `--from STEP` starts later, for example `./datactl install --from preflight` on a host that loaded the images with `load`.
 
 - `generated/clearml.env` holds the ClearML connection keys. Copy them into the ClearML `.env` (replace existing keys).
 - `docker compose --project-directory . --env-file .env --env-file generated/compose.env -f compose.yaml ...` is what `datactl` runs.

@@ -10,7 +10,8 @@ declare -A IMAGE_KEY=([elasticsearch]=ELASTIC_IMAGE [mongo]=MONGO_IMAGE [redis]=
 declare -A ENV
 
 usage() {
-  echo "usage: datactl [--env FILE] {configure|pull|build|preflight|install|status|verify|bundle|load [--archive PATH]}" >&2
+  echo "usage: datactl [--env FILE] [--from STEP] {configure|pull|build|preflight|install|verify|status|bundle|load [--archive PATH]}" >&2
+  echo "chain: configure pull build preflight install verify (each runs every earlier step; --from starts later)" >&2
   exit 2
 }
 
@@ -188,15 +189,12 @@ cmd_build() {
 }
 
 cmd_preflight() {
-  cmd_configure
   (($(<"/proc/sys/vm/max_map_count") >= 262144)) || echo "Note: vm.max_map_count is below 262144; Elasticsearch runs without mmap storage"
-  cmd_pull
   docker image inspect "$(need REDIS_IMAGE)" >/dev/null 2>&1 || die "Redis image not built yet: run ./datactl build"
   compose config --quiet
 }
 
 cmd_install() {
-  cmd_preflight
   compose up -d --no-build --wait --wait-timeout 300
 }
 
@@ -228,26 +226,33 @@ cmd_load() {
   docker load -i "$archive"
 }
 
+CHAIN=(configure pull build preflight install verify)
 COMMAND=
+FROM=
 while (($#)); do
   case $1 in
     --env) [[ $# -ge 2 ]] || usage; ENV_FILE=$2; shift 2 ;;
+    --from) [[ $# -ge 2 ]] || usage; FROM=$2; shift 2 ;;
     --archive) [[ $# -ge 2 ]] || usage; ARCHIVE=$2; shift 2 ;;
-    configure | pull | build | preflight | install | status | verify | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
+    configure | pull | build | preflight | install | verify | status | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
     *) usage ;;
   esac
 done
 [[ -n $COMMAND ]] || usage
 ENV_PATH=$(abs "$ENV_FILE")
 read_env "$ENV_PATH"
+chain_index() { local i; for i in "${!CHAIN[@]}"; do [[ ${CHAIN[$i]} == "$1" ]] && { echo "$i"; return; }; done; return 1; }
 case $COMMAND in
-  configure) cmd_configure ;;
-  pull) cmd_pull ;;
-  build) cmd_build ;;
-  preflight) cmd_preflight ;;
-  install) cmd_install ;;
   status) compose ps ;;
-  verify) cmd_verify ;;
   bundle) cmd_bundle ;;
   load) cmd_load ;;
+  *)
+    last=$(chain_index "$COMMAND")
+    first=0
+    if [[ -n $FROM ]]; then first=$(chain_index "$FROM") || die "--from must be one of: ${CHAIN[*]}"; fi
+    ((first <= last)) || die "--from $FROM comes after $COMMAND"
+    for step in "${CHAIN[@]:first:last-first+1}"; do
+      echo "==> $step"
+      "cmd_$step"
+    done ;;
 esac
