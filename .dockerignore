@@ -1,8 +1,8 @@
 .git
 .env
 generated
+!generated/trust
 dist
 **/__pycache__
 config
-!config/tls-ca-bundle.zip
 tests

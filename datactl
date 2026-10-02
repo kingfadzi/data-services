@@ -10,7 +10,7 @@ declare -A IMAGE_KEY=([elasticsearch]=ELASTIC_IMAGE [mongo]=MONGO_IMAGE [redis]=
 declare -A ENV
 
 usage() {
-  echo "usage: datactl [--env FILE] {configure|build|preflight|install|status|verify|bundle|load [--archive PATH]}" >&2
+  echo "usage: datactl [--env FILE] {trust|configure|build|preflight|install|status|verify|bundle|load [--archive PATH]}" >&2
   exit 2
 }
 
@@ -78,34 +78,53 @@ proxy_args() {
 }
 
 fetch_ca_bundle() {
-  # Stage config/tls-ca-bundle.zip for the build. Blank URL and no file: empty placeholder, no private CA.
-  local url=${ENV[TLS_CA_BUNDLE_URL]-} target=$ROOT/config/tls-ca-bundle.zip base=$1
-  mkdir -p "$ROOT/config"
+  # Stage generated/trust/{tls-ca-bundle.zip,tls-ca-bundle.pem} for the build. Blank URL and no local
+  # files: empty placeholders, no private CA. A manual config/tls-ca-bundle.pem bootstraps the download.
+  local url=${ENV[TLS_CA_BUNDLE_URL]-} base=$1 zip=$ROOT/config/tls-ca-bundle.zip pem=$ROOT/config/tls-ca-bundle.pem
+  local staged=$ROOT/generated/trust have=
+  mkdir -p "$ROOT/config" "$staged"
   if [[ -n $url ]]; then
     [[ $url == http://* || $url == https://* ]] || die "TLS_CA_BUNDLE_URL must be an http(s) URL"
-    local -a proxy=()
+    local -a run=(--user "$UID:$(id -g)" -v "$ROOT/config:/out")
+    local -a curl=(curl -fsSL --proto '=http,https' -o /out/tls-ca-bundle.zip.part)
     local key
     for key in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
-      [[ -n ${ENV[$key]-} ]] && proxy+=(-e "$key=${ENV[$key]}" -e "${key,,}=${ENV[$key]}")
+      [[ -n ${ENV[$key]-} ]] && run+=(-e "$key=${ENV[$key]}" -e "${key,,}=${ENV[$key]}")
     done
-    docker run --rm --user "$UID:$(id -g)" "${proxy[@]}" -v "$ROOT/config:/out" "$base" \
-      curl -fsSL --proto '=http,https' -o /out/tls-ca-bundle.zip.part "$url" || die "Could not download TLS_CA_BUNDLE_URL"
-    mv "$ROOT/config/tls-ca-bundle.zip.part" "$target"
+    [[ -s $pem ]] && curl+=(--cacert /out/tls-ca-bundle.pem)
+    if docker run --rm "${run[@]}" "$base" "${curl[@]}" "$url"; then
+      mv "$zip.part" "$zip"
+    else
+      rm -f "$zip.part"
+      if [[ -s $zip ]]; then
+        echo "WARNING: could not download the CA bundle; using the existing config/tls-ca-bundle.zip" >&2
+      else
+        die "Could not download TLS_CA_BUNDLE_URL. If that host uses the private CA, place the CA as config/tls-ca-bundle.pem (it is inside the zip) and retry, or copy the zip to config/tls-ca-bundle.zip"
+      fi
+    fi
   fi
-  if [[ -s $target ]]; then
-    docker run --rm -v "$target:/bundle.zip:ro" "$base" python3 -c '
+  if [[ -s $zip ]]; then
+    docker run --rm -v "$zip:/bundle.zip:ro" "$base" python3 -c '
 import sys, zipfile
 try:
     names = zipfile.ZipFile("/bundle.zip").namelist()
 except zipfile.BadZipFile:
     sys.exit("config/tls-ca-bundle.zip is not a zip archive")
 if not any(n.lower().endswith((".pem", ".crt", ".cer")) for n in names):
-    sys.exit("CA bundle contains no .pem/.crt/.cer certificates")
-print(f"CA bundle: {sum(n.lower().endswith((chr(46)+chr(112)+chr(101)+chr(109), chr(46)+chr(99)+chr(114)+chr(116), chr(46)+chr(99)+chr(101)+chr(114))) for n in names)} certificate file(s)")' || die "Invalid CA bundle"
+    sys.exit("CA bundle contains no .pem/.crt/.cer certificates")' || die "Invalid CA bundle"
+    cp "$zip" "$staged/tls-ca-bundle.zip"
+    have="zip"
   else
-    : >"$target"
-    echo "No CA bundle configured; images use system trust"
+    : >"$staged/tls-ca-bundle.zip"
   fi
+  if [[ -s $pem ]]; then
+    grep -q 'BEGIN CERTIFICATE' "$pem" || die "config/tls-ca-bundle.pem holds no PEM certificate"
+    cp "$pem" "$staged/tls-ca-bundle.pem"
+    have="${have:+$have, }pem"
+  else
+    : >"$staged/tls-ca-bundle.pem"
+  fi
+  echo "CA material staged: ${have:-none (system trust)}"
 }
 
 check_image() {
@@ -219,7 +238,7 @@ while (($#)); do
   case $1 in
     --env) [[ $# -ge 2 ]] || usage; ENV_FILE=$2; shift 2 ;;
     --archive) [[ $# -ge 2 ]] || usage; ARCHIVE=$2; shift 2 ;;
-    configure | build | preflight | install | status | verify | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
+    trust | configure | build | preflight | install | status | verify | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
     *) usage ;;
   esac
 done
@@ -227,6 +246,7 @@ done
 ENV_PATH=$(abs "$ENV_FILE")
 read_env "$ENV_PATH"
 case $COMMAND in
+  trust) base=$(need RUNTIME_BASE_IMAGE); check_image "$base"; ensure_image "$base"; fetch_ca_bundle "$base" ;;
   configure) cmd_configure ;;
   build) cmd_build ;;
   preflight) cmd_preflight ;;

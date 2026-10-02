@@ -15,10 +15,13 @@
 - `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`: proxy for build-time RPM downloads; blank means no proxy.
 - RPMs install from the repositories baked into `RUNTIME_BASE_IMAGE`. The base must carry the Elasticsearch, MongoDB and Redis vendor repos; `containers/base-example/` shows how to derive such an image. Remi signs with more than one key; list all of them in `gpgkey`.
 - `*_PACKAGE`: exact RPM specs. A module stream such as `@redis:remi-8.2` is accepted.
-- `TLS_CA_BUNDLE_URL`: URL of a zip holding the internally signed CA certificates (`.pem`/`.crt`/`.cer`). Blank means no private CA is required. `build` downloads it to `config/tls-ca-bundle.zip` (curl inside the base image, through the proxy settings) and installs it into the images' OS trust. A zip placed there by hand is used when the URL is blank.
+- `TLS_CA_BUNDLE_URL`: URL of a zip holding the internally signed CA certificates (`.pem`/`.crt`/`.cer`). Blank means no private CA is required. `trust` or `build` downloads it to `config/tls-ca-bundle.zip` (curl inside the base image, through the proxy settings) and installs it into the images' OS trust.
+- Bootstrap: if the download host itself uses the private CA, place the CA by hand as `config/tls-ca-bundle.pem` (the same file is inside the zip). It verifies the download and is installed into the images as well.
+- Download failure: an existing `config/tls-ca-bundle.zip` is reused with a warning; otherwise the command stops and tells you to place the PEM or the zip. `./datactl trust` stages and validates without building.
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
 
 ```sh
+./datactl trust         # optional: download/validate the CA bundle into generated/trust
 ./datactl build
 ./datactl configure
 ./datactl preflight     # checks vm.max_map_count >= 262144, images, compose model

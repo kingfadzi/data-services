@@ -1,10 +1,10 @@
 ARG RUNTIME_BASE_IMAGE
 FROM ${RUNTIME_BASE_IMAGE} AS base
 USER root
-COPY config/tls-ca-bundle.zip /tmp/tls-ca-bundle.zip
+COPY generated/trust/ /tmp/trust/
 COPY containers/install-trust.sh /tmp/install-trust.sh
 COPY containers/install-rpms.sh /tmp/install-rpms.sh
-RUN sh /tmp/install-trust.sh && rm -f /tmp/tls-ca-bundle.zip /tmp/install-trust.sh
+RUN sh /tmp/install-trust.sh && rm -rf /tmp/trust /tmp/install-trust.sh
 RUN sh /tmp/install-rpms.sh shadow-utils util-linux-core procps-ng
 
 FROM base AS elasticsearch
