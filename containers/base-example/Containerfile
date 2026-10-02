@@ -1,0 +1,5 @@
+# Example: derive a base image that carries the vendor YUM repositories the data-services build needs.
+# Build: docker build -f containers/base-example/Containerfile --build-arg BASE_IMAGE=<el9 base> -t <registry>/mirror/el9-repos:<tag> containers/base-example
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY repos/*.repo /etc/yum.repos.d/

@@ -57,55 +57,37 @@ boolean() {
 }
 
 allowed_host() {
-  local host=$1 entry
-  IFS=, read -ra entries <<<"$(need ALLOWED_HOSTS)"
+  # Blank ALLOWED_HOSTS disables the allowlist.
+  local host=$1 entry list=${ENV[ALLOWED_HOSTS]-}
+  [[ -z ${list//[, ]/} ]] && return 0
+  IFS=, read -ra entries <<<"$list"
   for entry in "${entries[@]}"; do
     [[ ${entry// /} == "$host" ]] && return 0
   done
   return 1
 }
 
-url_host() {
-  local rest=${1#*://}
-  rest=${rest%%/*}
-  printf '%s' "${rest%%:*}"
+proxy_args() {
+  # Blank means no proxy; both letter cases because dnf and curl read the lowercase names.
+  local key value
+  for key in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+    value=${ENV[$key]-}
+    [[ -n $value ]] || continue
+    printf -- '--build-arg\n%s=%s\n--build-arg\n%s=%s\n' "$key" "$value" "${key,,}" "$value"
+  done
 }
 
 check_image() {
   local image=$1 registry last
-  [[ $image == */* ]] || die "Image registry is not in ALLOWED_HOSTS: $image"
-  registry=${image%%/*}
-  allowed_host "${registry%%:*}" || die "Image registry is not in ALLOWED_HOSTS: $image"
+  if [[ -n ${ENV[ALLOWED_HOSTS]-} ]]; then
+    [[ $image == */* ]] || die "Image registry is not in ALLOWED_HOSTS: $image"
+    registry=${image%%/*}
+    allowed_host "${registry%%:*}" || die "Image registry is not in ALLOWED_HOSTS: $image"
+  fi
   last=${image##*/}
   if [[ $last != *@sha256:* ]]; then
     [[ $last == *:* && $last != *:latest ]] || die "Use a versioned image tag or digest: $image"
   fi
-}
-
-check_repo_file() {
-  local file=${ENV[YUM_REPO_FILE]-} sections=0 line key value url
-  [[ -n $file ]] || return 0
-  file=$(abs "$file")
-  [[ -f $file ]] || die "YUM_REPO_FILE not found: $file"
-  while IFS= read -r line || [[ -n $line ]]; do
-    line=${line#"${line%%[![:space:]]*}"}
-    [[ -z $line || $line == \#* ]] && continue
-    if [[ $line == \[*\] ]]; then sections=$((sections + 1)); continue; fi
-    key=${line%%=*}
-    key=${key//[[:space:]]/}
-    value=${line#*=}
-    case $key in
-      mirrorlist | metalink) die "YUM repositories must use explicit baseurl values" ;;
-      baseurl | gpgkey)
-        for url in $value; do
-          [[ $key == gpgkey && $url == file:///* ]] && continue
-          [[ $url == http://* || $url == https://* ]] || die "Repository URL must be http(s): $url"
-          allowed_host "$(url_host "$url")" || die "Repository host is not in ALLOWED_HOSTS: $(url_host "$url")"
-        done ;;
-    esac
-  done <"$file"
-  ((sections > 0)) || die "YUM_REPO_FILE must contain repository definitions"
-  printf '%s' "$file"
 }
 
 compose() {
@@ -131,8 +113,7 @@ cmd_configure() {
 }
 
 cmd_build() {
-  local repo ca base service image key
-  repo=$(check_repo_file)
+  local ca base service image key
   ca=$(abs "$(need CA_BUNDLE)")
   [[ -f $ca ]] || die "CA_BUNDLE must exist; provide your site CA bundle"
   [[ $ca -ef $ROOT/config/ca.pem ]] || cp "$ca" "$ROOT/config/ca.pem"
@@ -143,7 +124,8 @@ cmd_build() {
   for key in RUNTIME_BASE_IMAGE ELASTIC_PACKAGE MONGO_PACKAGE MONGOSH_PACKAGE REDIS_PACKAGE; do
     args+=(--build-arg "$key=$(need "$key")")
   done
-  [[ -n $repo ]] && args+=(--secret "id=yum_repo,src=$repo")
+  mapfile -t proxy < <(proxy_args)
+  args+=("${proxy[@]}")
   for service in "${SERVICES[@]}"; do
     image=$(need "${IMAGE_KEY[$service]}")
     check_image "$image"
@@ -182,7 +164,7 @@ cmd_bundle() {
   mkdir -p "$ROOT/dist"
   docker save -o "$ROOT/dist/images.tar" "${images[@]}"
   tar -czf "$ROOT/dist/installer.tar.gz" -C "$ROOT" --exclude='__pycache__' \
-    datactl compose.yaml containers .env.example config/yum.repo.example README.md
+    datactl compose.yaml containers .env.example README.md
   (cd "$ROOT/dist" && sha256sum images.tar installer.tar.gz >checksums.sha256)
   echo "Bundle exported to dist/ without credentials; transfer site configuration separately."
 }

@@ -57,6 +57,11 @@ class RenderTests(unittest.TestCase):
         self.assertIn('tls-port 6379', (self.root / 'generated/redis.conf').read_text())
         self.assertEqual(render.env_file(self.root / 'generated/clearml.env')['REDIS_TLS'], 'true')
 
+    def test_datactl_rejects_bad_env_and_honours_blank_allowlist(self):
+        env=self.root/'bad.env'; env.write_text('A=1\nA=2\n')
+        self.assertNotEqual(subprocess.run(['bash',str(ROOT/'datactl'),'--env',str(env),'status'],capture_output=True).returncode,0)
+        text=(ROOT/'datactl').read_text()
+        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('proxy_args',text)
     def test_datactl_is_bash_and_parses(self):
         subprocess.run(['bash', '-n', str(ROOT / 'datactl')], check=True)
         text = (ROOT / 'datactl').read_text()

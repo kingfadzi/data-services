@@ -11,8 +11,9 @@
 - Copy `.env.example` to `.env`. Literal values, mode 600.
 - `RUNTIME_BASE_IMAGE`: EL9 base, present locally, tagged from an `ALLOWED_HOSTS` registry. Also used as the toolbox for `configure`.
 - `.env` values are literal; write `$` as `$$` because Compose interpolates `.env`.
-- `ALLOWED_HOSTS`: registries and YUM repo hosts the build may contact.
-- `YUM_REPO_FILE`: optional. Needed here in practice: Elasticsearch, MongoDB and Redis vendor repos are not in the base image. Multiple `gpgkey` URLs per section are allowed (Remi signs with more than one key).
+- `ALLOWED_HOSTS`: optional allowlist of image registries; blank disables the check.
+- `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`: proxy for build-time RPM downloads; blank means no proxy.
+- RPMs install from the repositories baked into `RUNTIME_BASE_IMAGE`. The base must carry the Elasticsearch, MongoDB and Redis vendor repos; `containers/base-example/` shows how to derive such an image. Remi signs with more than one key; list all of them in `gpgkey`.
 - `*_PACKAGE`: exact RPM specs. A module stream such as `@redis:remi-8.2` is accepted.
 - `CA_BUNDLE`: CA file copied into the images (writable if you append).
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
