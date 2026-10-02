@@ -6,3 +6,5 @@ config/ca.pem
 config/tls/
 __pycache__/
 config/tls-ca/
+.env.ubi9
+config/yum.ubi9.repo
