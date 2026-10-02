@@ -1,13 +1,16 @@
 # data-services
 
 - Single-host Docker Compose stack: Elasticsearch, MongoDB and Redis for ClearML.
+- Host needs only bash, coreutils and the docker CLI. `datactl` is a bash script; secret and config rendering runs in a container from `RUNTIME_BASE_IMAGE` (python3 from the base image).
+- `compose.yaml` is static and interpolated from `.env` plus `generated/compose.env`.
 - Images are built from vendor RPMs on a configurable EL9 base (AlmaLinux 9 verified; UBI 9 build supported). No upstream database container images.
 - Verified versions: Elasticsearch 8.19.9, MongoDB 8.0.15 with mongosh 2.5.8, Redis 8.2.10 (Remi module stream `redis:remi-8.2`). These match the clearml-server v2.4.0 compose file apart from the Redis patch level.
 
 ## Setup
 
 - Copy `.env.example` to `.env`. Literal values, mode 600.
-- `RUNTIME_BASE_IMAGE`: EL9 base, present locally, tagged from an `ALLOWED_HOSTS` registry.
+- `RUNTIME_BASE_IMAGE`: EL9 base, present locally, tagged from an `ALLOWED_HOSTS` registry. Also used as the toolbox for `configure`.
+- `.env` values are literal; write `$` as `$$` because Compose interpolates `.env`.
 - `ALLOWED_HOSTS`: registries and YUM repo hosts the build may contact.
 - `YUM_REPO_FILE`: optional. Needed here in practice: Elasticsearch, MongoDB and Redis vendor repos are not in the base image. Multiple `gpgkey` URLs per section are allowed (Remi signs with more than one key).
 - `*_PACKAGE`: exact RPM specs. A module stream such as `@redis:remi-8.2` is accepted.
@@ -24,7 +27,12 @@
 ```
 
 - `generated/clearml.env` holds the ClearML connection keys. Copy them into the ClearML `.env` (replace existing keys).
+- `docker compose --project-directory . --env-file .env --env-file generated/compose.env -f compose.yaml ...` is what `datactl` runs; use it directly if needed.
 - Named volumes `data-services_elasticsearch-data`, `data-services_mongo-data`, `data-services_redis-data` persist independently. Never `down -v` on a populated deployment.
+
+## Tests
+
+- `python3 -m unittest discover -s tests -q` on a development host (render logic, bash syntax, compose model). Not needed on the locked-down host.
 
 ## Behaviour
 
@@ -43,8 +51,8 @@
 
 ## Transfer
 
-- `./datactl bundle` writes `dist/images.tar`, `dist/installer.tar.gz`, `dist/checksums.json`. Credentials, TLS files and data are excluded.
-- On the target: verify checksums, `./datactl load`, restore `.env`, `generated/credentials.json` and TLS files, then `configure` and `install`.
+- `./datactl bundle` writes `dist/images.tar`, `dist/installer.tar.gz`, `dist/checksums.sha256`. Credentials, TLS files and data are excluded.
+- On the target: `./datactl load [--archive PATH]` verifies `checksums.sha256` next to the archive, then loads images. Restore `.env`, `generated/credentials.json` and TLS files, then `configure` and `install`.
 
 ## Limitations
 

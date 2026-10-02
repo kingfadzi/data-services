@@ -1,0 +1,82 @@
+# Interpolated from .env and generated/compose.env (written by `datactl configure`).
+name: data-services
+
+x-health: &health
+  interval: 10s
+  timeout: 10s
+  retries: 30
+  start_period: 60s
+
+services:
+  elasticsearch:
+    image: ${ELASTIC_IMAGE}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS}:${ELASTIC_PORT}:9200"
+    environment:
+      TLS_ENABLED: "${TLS_ENABLED}"
+      ES_JAVA_OPTS: "-Xms${ELASTIC_HEAP} -Xmx${ELASTIC_HEAP}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+      - ./generated/elasticsearch.yml:/run/config/elasticsearch.yml:ro,z
+      - ./generated/elastic-health.conf:/run/config/elastic-health.conf:ro,z
+      - ${TLS_MOUNT_DIR}:/run/tls:ro,z
+    secrets:
+      - elastic_password
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/usr/local/bin/health", "elasticsearch"]
+
+  mongo:
+    image: ${MONGO_IMAGE}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS}:${MONGO_PORT}:27017"
+    environment:
+      TLS_ENABLED: "${TLS_ENABLED}"
+    volumes:
+      - mongo-data:/data/db
+      - ./generated/mongod.json:/run/config/mongod.json:ro,z
+      - ${TLS_MOUNT_DIR}:/run/tls:ro,z
+    secrets:
+      - mongo_credentials
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/usr/local/bin/health", "mongo"]
+
+  redis:
+    image: ${REDIS_IMAGE}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS}:${REDIS_PORT}:6379"
+    environment:
+      TLS_ENABLED: "${TLS_ENABLED}"
+    volumes:
+      - redis-data:/data
+      - ./generated/redis.conf:/run/config/redis.conf:ro,z
+      - ${TLS_MOUNT_DIR}:/run/tls:ro,z
+    secrets:
+      - redis_password
+    healthcheck:
+      <<: *health
+      test: ["CMD", "/usr/local/bin/health", "redis"]
+
+volumes:
+  elasticsearch-data: {}
+  mongo-data: {}
+  redis-data: {}
+
+secrets:
+  elastic_password:
+    file: ./generated/elastic_password
+  mongo_credentials:
+    file: ./generated/mongo_credentials
+  redis_password:
+    file: ./generated/redis_password
