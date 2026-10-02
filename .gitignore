@@ -1,10 +1,7 @@
 .env
+.env.*
+!.env.example
 generated/
 dist/
-config/tls-ca-bundle.pem
-config/tls-ca-bundle.zip
-config/tls/
+config/
 __pycache__/
-config/tls-ca/
-.env.ubi9
-containers/base-example/repos/*.repo

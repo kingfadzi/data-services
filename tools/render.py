@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render data-services secrets and service configuration. Runs inside a container; stdlib only, Python 3.9+."""
+"""Render data-services secrets, service configuration and Compose variables. Runs inside a container; stdlib only, Python 3.9+."""
 import json
 import os
 import re
@@ -62,75 +62,78 @@ def write_json(path, value):
     private_write(path, json.dumps(value, indent=2) + '\n')
 
 
+TLS_FILES = ('ca.pem', 'server.crt', 'server.key', 'mongo.pem')
+
+
 def render(root, env, host_root, tls_dir=None):
     """root: directory holding generated/. host_root: the same directory as seen by the Docker host.
-    tls_dir: where TLS files are visible here; defaults to TLS_DIR under root."""
+    tls_dir: where TLS files are visible here when TLS is enabled; defaults to TLS_DIR under root."""
     generated = root / 'generated'
     generated.mkdir(exist_ok=True)
     cred_path = generated / 'credentials.json'
     old = json.loads(cred_path.read_text()) if cred_path.exists() else {}
     credentials = {}
-    for key in ('ELASTIC_PASSWORD', 'MONGO_PASSWORD', 'REDIS_PASSWORD'):
+    for key in ('ELASTIC_PASSWORD', 'MONGO_ROOT_PASSWORD', 'MONGO_PASSWORD', 'REDIS_PASSWORD'):
         value = env.get(key, '') or old.get(key) or secrets.token_hex(32)
         if old.get(key) and value != old[key]:
             raise Error(f'{key}: rotating existing credentials requires an explicit database operation')
         if not re.fullmatch(r'[A-Za-z0-9_-]{16,}', value):
             raise Error(f'{key}: use at least 16 letters, digits, underscores or hyphens')
         credentials[key] = value
-    username = need(env, 'MONGO_USERNAME')
-    if old.get('MONGO_USERNAME', username) != username:
-        raise Error('Changing an initialized MongoDB username requires an explicit database operation')
-    credentials['MONGO_USERNAME'] = username
+    for key, default in (('MONGO_USERNAME', None), ('MONGO_ROOT_USERNAME', 'admin')):
+        value = env.get(key) or default or need(env, key)
+        if old.get(key, value) != value:
+            raise Error(f'{key}: changing an initialized MongoDB username requires an explicit database operation')
+        credentials[key] = value
     write_json(cred_path, credentials)
-    for key, filename in (('ELASTIC_PASSWORD', 'elastic_password'), ('REDIS_PASSWORD', 'redis_password')):
+    for key, filename in (('ELASTIC_PASSWORD', 'elastic_password'), ('REDIS_PASSWORD', 'redis_password'),
+                          ('MONGO_ROOT_USERNAME', 'mongo_root_username'), ('MONGO_ROOT_PASSWORD', 'mongo_root_password')):
         private_write(generated / filename, credentials[key])
-    write_json(generated / 'mongo_credentials', {'username': username, 'password': credentials['MONGO_PASSWORD']})
+    write_json(generated / 'mongo_credentials', {'username': credentials['MONGO_USERNAME'], 'password': credentials['MONGO_PASSWORD']})
 
     tls = boolean(env, 'TLS_ENABLED')
-    tls_setting = need(env, 'TLS_DIR')
-    host_tls = Path(tls_setting) if tls_setting.startswith('/') else Path(host_root) / tls_setting
     if tls:
-        check = Path(tls_dir) if tls_dir else root / tls_setting
-        for filename in ('ca.pem', 'server.crt', 'server.key', 'mongo.pem'):
+        check = Path(tls_dir) if tls_dir else root / need(env, 'TLS_DIR')
+        for filename in TLS_FILES:
             if not (check / filename).is_file():
                 raise Error(f'TLS file missing: {filename}')
-        tls_mount = host_tls
-    else:
-        (generated / 'no-tls').mkdir(exist_ok=True)
-        tls_mount = Path(host_root) / 'generated' / 'no-tls'
+    (generated / 'no-tls').mkdir(exist_ok=True)
+    host_generated = Path(host_root) / 'generated'
 
     es = {'cluster.name': 'clearml', 'node.name': 'clearml-data', 'network.host': '0.0.0.0',
-          'discovery.type': 'single-node', 'path.data': '/usr/share/elasticsearch/data',
-          'path.logs': '/usr/share/elasticsearch/logs', 'xpack.security.enabled': True,
+          'discovery.type': 'single-node', 'xpack.security.enabled': True,
           'xpack.security.enrollment.enabled': False, 'xpack.security.http.ssl.enabled': tls,
           'xpack.security.transport.ssl.enabled': False}
     if tls:
         es.update({'xpack.security.http.ssl.key': 'tls/server.key', 'xpack.security.http.ssl.certificate': 'tls/server.crt',
                    'xpack.security.http.ssl.certificate_authorities': ['tls/ca.pem']})
     write_json(generated / 'elasticsearch.yml', es)
-    mongo = {'storage': {'dbPath': '/data/db'}, 'net': {'bindIp': '0.0.0.0', 'port': 27017}, 'security': {'authorization': 'enabled'}}
-    if tls:
-        mongo['net']['tls'] = {'mode': 'requireTLS', 'certificateKeyFile': '/run/service-tls/mongo.pem',
-                               'CAFile': '/run/service-tls/ca.pem', 'allowConnectionsWithoutCertificates': True}
-    write_json(generated / 'mongod.json', mongo)
     redis = ['bind 0.0.0.0', 'protected-mode yes', 'dir /data', 'appendonly yes', f'requirepass {credentials["REDIS_PASSWORD"]}']
-    redis += (['port 0', 'tls-port 6379', 'tls-cert-file /run/service-tls/server.crt', 'tls-key-file /run/service-tls/server.key',
-               'tls-ca-cert-file /run/service-tls/ca.pem', 'tls-auth-clients no'] if tls else ['port 6379'])
+    redis += (['port 0', 'tls-port 6379', 'tls-cert-file /tls/server.crt', 'tls-key-file /tls/server.key',
+               'tls-ca-cert-file /tls/ca.pem', 'tls-auth-clients no'] if tls else ['port 6379'])
     private_write(generated / 'redis.conf', '\n'.join(redis) + '\n')
-    scheme = 'https' if tls else 'http'
-    private_write(generated / 'elastic-health.conf',
-                  f'url = "{scheme}://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=3s"\n'
-                  f'user = "elastic:{credentials["ELASTIC_PASSWORD"]}"\n' + ('cacert = "/run/tls/ca.pem"\n' if tls else ''))
-    # Service daemons read these; the directory itself stays private.
-    generated.chmod(0o700)
-    for name in ('elasticsearch.yml', 'mongod.json', 'redis.conf'):
+    # Config files are read by the service users inside the containers. Secrets stay 600 here and are
+    # re-staged per service with that service's uid by datactl (generated/private/<service>/).
+    for name in ('elasticsearch.yml', 'redis.conf'):
         (generated / name).chmod(0o644)
-    # Values compose.yaml needs beyond .env.
-    private_write(generated / 'compose.env', f'TLS_MOUNT_DIR={tls_mount}\n')
+
+    # Values compose.yaml needs beyond .env. TLS directories are per service so ownership can match each image user.
+    compose = {
+        'ES_TLS_DIR': host_generated / ('private/elasticsearch/tls' if tls else 'no-tls'),
+        'MONGO_TLS_DIR': host_generated / ('private/mongo/tls' if tls else 'no-tls'),
+        'REDIS_TLS_DIR': host_generated / ('private/redis/tls' if tls else 'no-tls'),
+        'ES_SCHEME': 'https' if tls else 'http',
+        'ES_HEALTH_CACERT': '--cacert /usr/share/elasticsearch/config/tls/ca.pem' if tls else '',
+        'MONGO_TLS_ARGS': '--tlsMode requireTLS --tlsCertificateKeyFile /tls/mongo.pem --tlsCAFile /tls/ca.pem --tlsAllowConnectionsWithoutCertificates' if tls else '',
+        'MONGO_HEALTH_TLS': '--tls --tlsCAFile /tls/ca.pem' if tls else '',
+        'REDIS_HEALTH_TLS': '--tls --cacert /tls/ca.pem' if tls else '',
+    }
+    private_write(generated / 'compose.env', ''.join(f'{key}={value}\n' for key, value in compose.items()))
 
     host = need(env, 'DATA_HOST')
+    scheme = 'https' if tls else 'http'
     query = 'authSource=admin' + ('&tls=true&tlsCAFile=/etc/pki/tls/certs/ca-bundle.crt' if tls else '')
-    user = quote(username, safe='')
+    user = quote(credentials['MONGO_USERNAME'], safe='')
     password = quote(credentials['MONGO_PASSWORD'], safe='')
     values = {'MONGO_BACKEND_URI': f'mongodb://{user}:{password}@{host}:{need(env, "MONGO_PORT")}/backend?{query}',
               'MONGO_AUTH_URI': f'mongodb://{user}:{password}@{host}:{need(env, "MONGO_PORT")}/auth?{query}',
@@ -139,6 +142,8 @@ def render(root, env, host_root, tls_dir=None):
               'REDIS_HOST': host, 'REDIS_PORT': need(env, 'REDIS_PORT'), 'REDIS_PASSWORD': credentials['REDIS_PASSWORD'],
               'REDIS_TLS': str(tls).lower()}
     private_write(generated / 'clearml.env', '\n'.join(f'{key}={value}' for key, value in values.items()) + '\n')
+    generated.chmod(0o700)
+    return tls
 
 
 def main():

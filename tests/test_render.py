@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location('render', ROOT / 'containers/tools/render.py')
+spec = importlib.util.spec_from_file_location('render', ROOT / 'tools/render.py')
 render = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(render)
 
@@ -29,10 +29,15 @@ class RenderTests(unittest.TestCase):
         self.assertIn('/backend?authSource=admin', connection['MONGO_BACKEND_URI'])
         self.assertEqual(connection['REDIS_TLS'], 'false')
         compose_env = render.env_file(self.root / 'generated/compose.env')
-        self.assertEqual(compose_env['TLS_MOUNT_DIR'], str(self.root / 'generated/no-tls'))
+        self.assertEqual(compose_env['ES_TLS_DIR'], str(self.root / 'generated/no-tls'))
+        self.assertEqual(compose_env['MONGO_TLS_ARGS'], '')
         self.assertTrue((self.root / 'generated/no-tls').is_dir())
+        self.assertEqual((self.root / 'generated/mongo_root_username').read_text(), 'admin')
+        self.assertTrue((self.root / 'generated/mongo_root_password').stat().st_size)
         self.assertEqual((self.root / 'generated/credentials.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / 'generated/redis.conf').stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.root / 'generated/mongo_credentials').stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.root / 'generated').stat().st_mode & 0o777, 0o700)
 
     def test_credentials_cannot_silently_rotate(self):
         render.render(self.root, self.env, self.root)
@@ -53,7 +58,9 @@ class RenderTests(unittest.TestCase):
             (tls / name).write_text('x')
         render.render(self.root, self.env, '/srv/data-services', tls)
         compose_env = render.env_file(self.root / 'generated/compose.env')
-        self.assertEqual(compose_env['TLS_MOUNT_DIR'], '/srv/data-services/config/tls')
+        self.assertEqual(compose_env['MONGO_TLS_DIR'], '/srv/data-services/generated/private/mongo/tls')
+        self.assertIn('--tlsMode requireTLS', compose_env['MONGO_TLS_ARGS'])
+        self.assertEqual(compose_env['ES_SCHEME'], 'https')
         self.assertIn('tls-port 6379', (self.root / 'generated/redis.conf').read_text())
         self.assertEqual(render.env_file(self.root / 'generated/clearml.env')['REDIS_TLS'], 'true')
 
@@ -61,7 +68,7 @@ class RenderTests(unittest.TestCase):
         env=self.root/'bad.env'; env.write_text('A=1\nA=2\n')
         self.assertNotEqual(subprocess.run(['bash',str(ROOT/'datactl'),'--env',str(env),'status'],capture_output=True).returncode,0)
         text=(ROOT/'datactl').read_text()
-        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('proxy_args',text); self.assertIn('TLS_CA_BUNDLE_URL',text); self.assertNotIn('CA_BUNDLE=',text); self.assertIn('tls-ca-bundle.pem',text); self.assertIn('--cacert',text)
+        self.assertNotIn('YUM_REPO_FILE',text); self.assertNotIn('docker build',text); self.assertIn('TOOLBOX_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text())
     def test_datactl_is_bash_and_parses(self):
         subprocess.run(['bash', '-n', str(ROOT / 'datactl')], check=True)
         text = (ROOT / 'datactl').read_text()

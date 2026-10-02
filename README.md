@@ -1,57 +1,51 @@
 # data-services
 
-- Single-host Docker Compose stack: Elasticsearch, MongoDB and Redis for ClearML.
-- Host needs only bash, coreutils and the docker CLI. `datactl` is a bash script; secret and config rendering runs in a container from `RUNTIME_BASE_IMAGE` (python3 from the base image).
+- Single-host Docker Compose stack: Elasticsearch, MongoDB and Redis for ClearML, running the official vendor images.
+- Images are pulled from the configured registry (Nexus upstream, public registries in the lab); nothing is built.
+- Host needs only bash, coreutils and the docker CLI. `datactl` is a bash script; configuration rendering and TLS staging run in a toolbox container.
 - `compose.yaml` is static and interpolated from `.env` plus `generated/compose.env`.
-- Images are built from vendor RPMs on a configurable EL9 base (AlmaLinux 9 verified; UBI 9 build supported). No upstream database container images.
-- Verified versions: Elasticsearch 8.19.9, MongoDB 8.0.15 with mongosh 2.5.8, Redis 8.2.10 (Remi module stream `redis:remi-8.2`). These match the clearml-server v2.4.0 compose file apart from the Redis patch level.
+- Verified versions: Elasticsearch 8.17.2, MongoDB 8.0.11, Redis 8.0.2.
 
 ## Setup
 
-- Copy `.env.example` to `.env`. Literal values, mode 600.
-- `RUNTIME_BASE_IMAGE`: EL9 base, pulled when not present locally. Also used as the toolbox for `configure`.
-- `.env` values are literal; write `$` as `$$` because Compose interpolates `.env`.
+- Copy `.env.example` to `.env`. Literal values, mode 600. Write `$` as `$$` because Compose interpolates `.env`.
+- `ELASTIC_IMAGE`, `MONGO_IMAGE`, `REDIS_IMAGE`: full references incl. registry and tag. Pulled when not present locally. `:latest` is rejected.
+- `TOOLBOX_IMAGE`: any image with `python3` and `sh` (an EL9 base works). Used for rendering and TLS staging only.
 - `ALLOWED_HOSTS`: optional allowlist of image registries; blank disables the check.
-- `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`: proxy for build-time RPM downloads; blank means no proxy.
-- RPMs install from the repositories baked into `RUNTIME_BASE_IMAGE`. The base must carry the Elasticsearch, MongoDB and Redis vendor repos; `containers/base-example/` shows how to derive such an image. Remi signs with more than one key; list all of them in `gpgkey`.
-- `*_PACKAGE`: exact RPM specs. A module stream such as `@redis:remi-8.2` is accepted.
-- `TLS_CA_BUNDLE_URL`: URL of a zip holding the internally signed CA certificates (`.pem`/`.crt`/`.cer`). Blank means no private CA is required. `trust` or `build` downloads it to `config/tls-ca-bundle.zip` (curl inside the base image, through the proxy settings) and installs it into the images' OS trust.
-- Bootstrap: if the download host itself uses the private CA, place the CA by hand as `config/tls-ca-bundle.pem` (the same file is inside the zip). It verifies the download and is installed into the images as well.
-- Download failure: an existing `config/tls-ca-bundle.zip` is reused with a warning; otherwise the command stops and tells you to place the PEM or the zip. `./datactl trust` stages and validates without building.
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
+- `MONGO_ROOT_USERNAME`/`MONGO_ROOT_PASSWORD`: MongoDB administrator created by the official image on first start. `MONGO_USERNAME`/`MONGO_PASSWORD`: the ClearML user, created by `init/mongo-init.js` on first start.
 
 ```sh
-./datactl trust         # optional: download/validate the CA bundle into generated/trust
-./datactl build
-./datactl configure
-./datactl preflight     # checks vm.max_map_count >= 262144, images, compose model
+./datactl configure     # render generated/ (secrets, configs, compose.env); stage TLS files
+./datactl pull          # pull the three images if missing
+./datactl preflight     # configure + pull + vm.max_map_count >= 262144 + compose model check
 ./datactl install
-./datactl verify        # in-container authenticated health probes
+./datactl verify        # container health status
 ./datactl status
 ```
 
 - `generated/clearml.env` holds the ClearML connection keys. Copy them into the ClearML `.env` (replace existing keys).
-- `docker compose --project-directory . --env-file .env --env-file generated/compose.env -f compose.yaml ...` is what `datactl` runs; use it directly if needed.
+- `docker compose --project-directory . --env-file .env --env-file generated/compose.env -f compose.yaml ...` is what `datactl` runs.
 - Named volumes `data-services_elasticsearch-data`, `data-services_mongo-data`, `data-services_redis-data` persist independently. Never `down -v` on a populated deployment.
 
-## Tests
+## How the official images are configured
 
-- `python3 -m unittest discover -s tests -q` on a development host (render logic, bash syntax, compose model). Not needed on the locked-down host.
-
-## Behaviour
-
-- MongoDB: first start initialises the ClearML user on loopback (`readWrite`/`dbAdmin` on `backend` and `auth`, `clusterMonitor` for the API server's version check), then restarts with auth on the network port. Existing data without the init marker fails closed. No separate admin user is created.
-- Elasticsearch: packaged config path `/etc/elasticsearch` is used (the RPM forces it). Install-time auto-configuration (certs, keystore, initial master) is removed at build. Keystore commands run as the service user so restarts succeed. Bootstrap password comes from the generated secret.
-- Redis: AOF persistence, password required, TLS-only port when TLS is enabled.
-- All entrypoints run as root only to fix ownership and copy TLS files, then drop to the vendor service account.
+- Elasticsearch: rendered `elasticsearch.yml` mounted over the image's config; `ELASTIC_PASSWORD_FILE` points at the generated secret; single node, security on, transport TLS off.
+- MongoDB: `mongod --bind_ip_all --auth` plus TLS arguments from `compose.env`; root user from `MONGO_INITDB_ROOT_*_FILE`; ClearML user and roles (`readWrite`/`dbAdmin` on `backend` and `auth`, `clusterMonitor`) from the init script. Init runs only on an empty volume.
+- Redis: `redis-server /run/config/redis.conf` with the rendered config; AOF on, password required, TLS-only port when enabled.
+- Secrets and config files under `generated/` are mode 644 so the image service users (uid 1000 and 999) can read them; `generated/` itself is mode 700.
+- Health checks run the vendor tools inside each container: `curl` for Elasticsearch, `mongosh` for MongoDB, `redis-cli` for Redis.
 
 ## TLS
 
 - Set `TLS_ENABLED=true`. Put `ca.pem`, `server.crt`, `server.key` and `mongo.pem` (key + cert) in `TLS_DIR`. Keep the CA key elsewhere.
-- Server certificate SANs must include `localhost` (health probes) and `DATA_HOST` (clients). Certificates need subject and authority key identifiers; a CA without them failed verification in the lab.
-- After changing certificates, restart the containers; entrypoints copy TLS files at start.
+- Server certificate SANs must include `localhost` (health checks) and `DATA_HOST` (clients). Certificates need subject and authority key identifiers.
+- `configure` copies the files into `generated/tls/<service>/` owned by each service user (`ELASTIC_UID`, `MONGO_UID`, `REDIS_UID`; defaults match the official images). After changing certificates, run `configure` and restart the containers.
 - Clients must trust the CA. For ClearML, include it in the CA bundle zip behind its `TLS_CA_BUNDLE_URL` and rebuild.
-- Verified in the lab: health probes, ClearML preflight and SDK round trip over TLS; wrong passwords and an untrusted CA rejected.
+
+## Tests
+
+- `python3 -m unittest discover -s tests -q` on a development host (render logic, bash syntax, compose model). Not needed on the locked-down host.
 
 ## Transfer
 
@@ -64,3 +58,4 @@
 - No backup automation; use vendor tools before upgrades.
 - No firewall; publish the database ports only to intended clients.
 - Credential rotation is a manual database operation followed by updating `generated/credentials.json`.
+- Changing image versions on an existing volume follows the vendors' upgrade rules; Elasticsearch does not support downgrades.

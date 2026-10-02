@@ -1,4 +1,4 @@
-# Interpolated from .env and generated/compose.env (written by `datactl configure`).
+# Official vendor images. Interpolated from .env and generated/compose.env (written by `datactl configure`).
 name: data-services
 
 x-health: &health
@@ -10,73 +10,80 @@ x-health: &health
 services:
   elasticsearch:
     image: ${ELASTIC_IMAGE}
-    pull_policy: never
+    pull_policy: missing
     restart: unless-stopped
     ports:
       - "${BIND_ADDRESS}:${ELASTIC_PORT}:9200"
     environment:
-      TLS_ENABLED: "${TLS_ENABLED}"
       ES_JAVA_OPTS: "-Xms${ELASTIC_HEAP} -Xmx${ELASTIC_HEAP}"
+      ELASTIC_PASSWORD_FILE: /run/secrets/elastic_password
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
-      - ./generated/elasticsearch.yml:/run/config/elasticsearch.yml:ro,z
-      - ./generated/elastic-health.conf:/run/config/elastic-health.conf:ro,z
-      - ${TLS_MOUNT_DIR}:/run/tls:ro,z
+      - ./generated/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro,z
+      - ${ES_TLS_DIR}:/usr/share/elasticsearch/config/tls:ro,z
     secrets:
       - elastic_password
     healthcheck:
       <<: *health
-      test: ["CMD", "/usr/local/bin/health", "elasticsearch"]
+      test: ["CMD-SHELL", "curl -fs ${ES_HEALTH_CACERT} -u elastic:$$(cat /run/secrets/elastic_password) '${ES_SCHEME}://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=3s' >/dev/null"]
 
   mongo:
     image: ${MONGO_IMAGE}
-    pull_policy: never
+    pull_policy: missing
     restart: unless-stopped
+    command: mongod --bind_ip_all --auth ${MONGO_TLS_ARGS}
     ports:
       - "${BIND_ADDRESS}:${MONGO_PORT}:27017"
     environment:
-      TLS_ENABLED: "${TLS_ENABLED}"
+      MONGO_INITDB_ROOT_USERNAME_FILE: /run/secrets/mongo_root_username
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
     volumes:
       - mongo-data:/data/db
-      - ./generated/mongod.json:/run/config/mongod.json:ro,z
-      - ${TLS_MOUNT_DIR}:/run/tls:ro,z
+      - ./init/mongo-init.js:/docker-entrypoint-initdb.d/10-clearml-user.js:ro,z
+      - ${MONGO_TLS_DIR}:/tls:ro,z
     secrets:
+      - mongo_root_username
+      - mongo_root_password
       - mongo_credentials
     healthcheck:
       <<: *health
-      test: ["CMD", "/usr/local/bin/health", "mongo"]
+      test: ["CMD-SHELL", "mongosh --quiet ${MONGO_HEALTH_TLS} --eval 'quit(db.runCommand({ping:1}).ok ? 0 : 1)' >/dev/null"]
 
   redis:
     image: ${REDIS_IMAGE}
-    pull_policy: never
+    pull_policy: missing
     restart: unless-stopped
+    command: redis-server /run/config/redis.conf
     ports:
       - "${BIND_ADDRESS}:${REDIS_PORT}:6379"
-    environment:
-      TLS_ENABLED: "${TLS_ENABLED}"
     volumes:
       - redis-data:/data
       - ./generated/redis.conf:/run/config/redis.conf:ro,z
-      - ${TLS_MOUNT_DIR}:/run/tls:ro,z
+      - ${REDIS_TLS_DIR}:/tls:ro,z
     secrets:
       - redis_password
     healthcheck:
       <<: *health
-      test: ["CMD", "/usr/local/bin/health", "redis"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli ${REDIS_HEALTH_TLS} ping | grep -q PONG"]
 
 volumes:
   elasticsearch-data: {}
   mongo-data: {}
   redis-data: {}
 
+# Staged by `datactl configure` with each service user's uid and mode 400.
 secrets:
   elastic_password:
-    file: ./generated/elastic_password
-  mongo_credentials:
-    file: ./generated/mongo_credentials
+    file: ./generated/private/elasticsearch/elastic_password
   redis_password:
-    file: ./generated/redis_password
+    file: ./generated/private/redis/redis_password
+  mongo_root_username:
+    file: ./generated/private/mongo/mongo_root_username
+  mongo_root_password:
+    file: ./generated/private/mongo/mongo_root_password
+  mongo_credentials:
+    file: ./generated/private/mongo/mongo_credentials
