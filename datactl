@@ -10,7 +10,7 @@ declare -A IMAGE_KEY=([elasticsearch]=ELASTIC_IMAGE [mongo]=MONGO_IMAGE [redis]=
 declare -A ENV
 
 usage() {
-  echo "usage: datactl [--env FILE] {configure|pull|preflight|install|status|verify|bundle|load [--archive PATH]}" >&2
+  echo "usage: datactl [--env FILE] {configure|pull|build|preflight|install|status|verify|bundle|load [--archive PATH]}" >&2
   exit 2
 }
 
@@ -111,20 +111,22 @@ stage_private() {
   fi
   mkdir -p "$ROOT/generated/private"
   docker run --rm -v "$ROOT/generated:/generated" ${src:+-v "$src:/src:ro"} -e "TLS=$tls" \
-    -e "ES_UID=${ENV[ELASTIC_UID]:-1000}" -e "MONGO_UID=${ENV[MONGO_UID]:-999}" -e "REDIS_UID=${ENV[REDIS_UID]:-999}" \
+    -e "ES_UID=${ENV[ELASTIC_UID]:-1000}" -e "MONGO_UID=${ENV[MONGO_UID]:-999}" -e "REDIS_UID=${ENV[REDIS_UID]:-1001}" \
     "$toolbox" sh -c '
       set -e
       cd /generated
-      rm -rf private/elasticsearch private/mongo private/redis
+      # Overwrite in place: the files are bind-mounted into running containers, so inodes must survive re-staging.
       stage() { # service uid files...
         name=$1; uid=$2; shift 2
-        mkdir -p "private/$name"
-        for f in "$@"; do cp "$f" "private/$name/"; done
+        mkdir -p "private/$name/tls"
+        chmod 700 "private/$name" "private/$name/tls"
+        for f in "$@"; do cp "$f" "private/$name/$f"; done
         if [ "$TLS" = true ]; then
-          mkdir -p "private/$name/tls"
-          cp /src/ca.pem /src/server.crt /src/server.key /src/mongo.pem "private/$name/tls/"
-          chmod 500 "private/$name/tls"
+          for f in ca.pem server.crt server.key mongo.pem; do cp "/src/$f" "private/$name/tls/$f"; done
+        else
+          rm -f "private/$name"/tls/*
         fi
+        chmod 500 "private/$name/tls"
         chown -R "$uid:$uid" "private/$name"
         find "private/$name" -type f -exec chmod 400 {} +
         chmod 500 "private/$name"
@@ -151,18 +153,45 @@ cmd_configure() {
   stage_private "$toolbox" "$(boolean TLS_ENABLED)"
 }
 
+proxy_args() {
+  # Blank means no proxy; both letter cases because dnf and curl read the lowercase names.
+  local key value
+  for key in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+    value=${ENV[$key]-}
+    [[ -n $value ]] || continue
+    printf -- '--build-arg\n%s=%s\n--build-arg\n%s=%s\n' "$key" "$value" "${key,,}" "$value"
+  done
+}
+
 cmd_pull() {
-  local image
-  while read -r image; do
+  # Vendor images only; the Redis image is built locally.
+  local service image
+  for service in elasticsearch mongo; do
+    image=$(need "${IMAGE_KEY[$service]}")
     check_image "$image"
     ensure_image "$image"
-  done < <(all_images)
+  done
+}
+
+cmd_build() {
+  local base image
+  base=$(need REDIS_BASE_IMAGE)
+  check_image "$base"
+  ensure_image "$base"
+  image=$(need REDIS_IMAGE)
+  check_image "$image"
+  local -a proxy=()
+  mapfile -t proxy < <(proxy_args)
+  docker build --pull=false --network "${ENV[BUILD_NETWORK]:-default}" -f "$ROOT/containers/Containerfile" \
+    --build-arg "REDIS_BASE_IMAGE=$base" --build-arg "REDIS_PACKAGE=$(need REDIS_PACKAGE)" --build-arg "REDIS_UID=${ENV[REDIS_UID]:-1001}" \
+    "${proxy[@]}" -t "$image" "$ROOT/containers"
 }
 
 cmd_preflight() {
   cmd_configure
   (($(<"/proc/sys/vm/max_map_count") >= 262144)) || echo "Note: vm.max_map_count is below 262144; Elasticsearch runs without mmap storage"
   cmd_pull
+  docker image inspect "$(need REDIS_IMAGE)" >/dev/null 2>&1 || die "Redis image not built yet: run ./datactl build"
   compose config --quiet
 }
 
@@ -185,7 +214,7 @@ cmd_bundle() {
   mkdir -p "$ROOT/dist"
   docker save -o "$ROOT/dist/images.tar" "${images[@]}"
   tar -czf "$ROOT/dist/installer.tar.gz" -C "$ROOT" --exclude='__pycache__' \
-    datactl compose.yaml tools init .env.example README.md
+    datactl compose.yaml containers tools init .env.example README.md
   (cd "$ROOT/dist" && sha256sum images.tar installer.tar.gz >checksums.sha256)
   echo "Bundle exported to dist/ without credentials; transfer site configuration separately."
 }
@@ -204,7 +233,7 @@ while (($#)); do
   case $1 in
     --env) [[ $# -ge 2 ]] || usage; ENV_FILE=$2; shift 2 ;;
     --archive) [[ $# -ge 2 ]] || usage; ARCHIVE=$2; shift 2 ;;
-    configure | pull | preflight | install | status | verify | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
+    configure | pull | build | preflight | install | status | verify | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
     *) usage ;;
   esac
 done
@@ -214,6 +243,7 @@ read_env "$ENV_PATH"
 case $COMMAND in
   configure) cmd_configure ;;
   pull) cmd_pull ;;
+  build) cmd_build ;;
   preflight) cmd_preflight ;;
   install) cmd_install ;;
   status) compose ps ;;

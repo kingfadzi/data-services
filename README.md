@@ -1,15 +1,17 @@
 # data-services
 
-- Single-host Docker Compose stack: Elasticsearch, MongoDB and Redis for ClearML, running the official vendor images.
-- Images are pulled from the configured registry (Nexus upstream, public registries in the lab); nothing is built.
+- Single-host Docker Compose stack: Elasticsearch, MongoDB and Redis for ClearML.
+- Elasticsearch and MongoDB run the official vendor images pulled from the configured registry (Nexus upstream, public registries in the lab).
+- Redis is built locally by `datactl build` from the RPM in the base image's repositories (`REDIS_BASE_IMAGE`, `REDIS_PACKAGE`); there is no open-source Redis image in the upstream registry.
 - Host needs only bash, coreutils and the docker CLI. `datactl` is a bash script; configuration rendering and TLS staging run in a toolbox container.
 - `compose.yaml` is static and interpolated from `.env` plus `generated/compose.env`.
-- Verified versions: Elasticsearch 8.17.2, MongoDB 8.0.11, Redis 8.0.2.
+- Verified versions: Elasticsearch 8.17.2, MongoDB 8.0.11, Redis from the EL9 AppStream RPM.
 
 ## Setup
 
 - Copy `.env.example` to `.env`. Literal values, mode 600. Write `$` as `$$` because Compose interpolates `.env`.
-- `ELASTIC_IMAGE`, `MONGO_IMAGE`, `REDIS_IMAGE`: full references incl. registry and tag. Pulled when not present locally. `:latest` is rejected.
+- `ELASTIC_IMAGE`, `MONGO_IMAGE`: full references incl. registry and tag. Pulled when not present locally. `:latest` is rejected.
+- `REDIS_BASE_IMAGE`: EL9 base whose repositories provide `REDIS_PACKAGE` (`redis` for the AppStream default, `@redis:7` for the module stream). `REDIS_IMAGE`: tag for the built image. `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` reach the build; blank means no proxy.
 - `TOOLBOX_IMAGE`: any image with `python3` and `sh` (an EL9 base works). Used for rendering and TLS staging only.
 - `ALLOWED_HOSTS`: optional allowlist of image registries; blank disables the check.
 - Empty passwords are generated once into `generated/credentials.json`. Re-running `configure` with a different password is refused.
@@ -17,7 +19,8 @@
 
 ```sh
 ./datactl configure     # render generated/ (secrets, configs, compose.env); stage TLS files
-./datactl pull          # pull the three images if missing
+./datactl pull          # pull Elasticsearch and MongoDB if missing
+./datactl build         # build the Redis image from the RPM
 ./datactl preflight     # configure + pull + compose model check
 ./datactl install
 ./datactl verify        # container health status
@@ -33,7 +36,7 @@
 - Elasticsearch: rendered `elasticsearch.yml` mounted over the image's config; `ELASTIC_PASSWORD_FILE` points at the generated secret; single node, security on, transport TLS off.
 - No host sysctl is required. When `vm.max_map_count` is below 262144, `configure` sets `node.store.allow_mmap: false` so Elasticsearch uses regular file I/O (Elastic's documented fallback; slightly lower read performance). Raise the sysctl and re-run `configure` to use mmap.
 - MongoDB: `mongod --bind_ip_all --auth` plus TLS arguments from `compose.env`; root user from `MONGO_INITDB_ROOT_*_FILE`; ClearML user and roles (`readWrite`/`dbAdmin` on `backend` and `auth`, `clusterMonitor`) from the init script. Init runs only on an empty volume.
-- Redis: `redis-server /run/config/redis.conf` with the rendered config; AOF on, password required, TLS-only port when enabled.
+- Redis: runs as `REDIS_UID` with `redis-server /run/config/redis.conf`; AOF on, password required, TLS-only port when enabled.
 - Secrets and config files under `generated/` are mode 644 so the image service users (uid 1000 and 999) can read them; `generated/` itself is mode 700.
 - Health checks run the vendor tools inside each container: `curl` for Elasticsearch, `mongosh` for MongoDB, `redis-cli` for Redis.
 
@@ -41,7 +44,7 @@
 
 - Set `TLS_ENABLED=true`. Put `ca.pem`, `server.crt`, `server.key` and `mongo.pem` (key + cert) in `TLS_DIR`. Keep the CA key elsewhere.
 - Server certificate SANs must include `localhost` (health checks) and `DATA_HOST` (clients). Certificates need subject and authority key identifiers.
-- `configure` copies the files into `generated/tls/<service>/` owned by each service user (`ELASTIC_UID`, `MONGO_UID`, `REDIS_UID`; defaults match the official images). After changing certificates, run `configure` and restart the containers.
+- `configure` copies the files into `generated/tls/<service>/` owned by each service user (`ELASTIC_UID`, `MONGO_UID`, `REDIS_UID`; defaults match the official images; Redis uses 1001, a uid free in EL9 bases). After changing certificates, run `configure` and restart the containers.
 - Clients must trust the CA. For ClearML, include it in the CA bundle zip behind its `TLS_CA_BUNDLE_URL` and rebuild.
 
 ## Tests

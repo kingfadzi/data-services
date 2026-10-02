@@ -1,4 +1,4 @@
-# Official vendor images. Interpolated from .env and generated/compose.env (written by `datactl configure`).
+# Vendor images for Elasticsearch and MongoDB, locally built Redis. Interpolated from .env and generated/compose.env (written by `datactl configure`).
 name: data-services
 
 x-health: &health
@@ -55,8 +55,9 @@ services:
 
   redis:
     image: ${REDIS_IMAGE}
-    pull_policy: missing
+    pull_policy: never
     restart: unless-stopped
+    user: "${REDIS_UID}"
     command: redis-server /run/config/redis.conf
     ports:
       - "${BIND_ADDRESS}:${REDIS_PORT}:6379"
