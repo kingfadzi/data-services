@@ -126,7 +126,7 @@ def main():
         path = ROOT/'dist'; path.mkdir(exist_ok=True)
         run('docker','save','-o',path/'images.tar',*images(env).values())
         with tarfile.open(path/'installer.tar.gz','w:gz') as bundle:
-            for name in ('datactl','common.py','containers','.env.example','config/internal.repo.example','README.md'):
+            for name in ('datactl','common.py','containers','.env.example','config/yum.repo.example','README.md'):
                 bundle.add(ROOT/name,arcname=name)
         write_json(path/'checksums.json',{name:sha(path/name) for name in ('images.tar','installer.tar.gz')})
     elif args.command == 'load':

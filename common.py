@@ -73,30 +73,33 @@ def sha(path):
 
 def allowed_url(url, env):
     parsed = urlparse(url)
-    hosts = {x.strip() for x in need(env, 'INTERNAL_HOSTS').split(',')}
+    hosts = {x.strip() for x in need(env, 'ALLOWED_HOSTS').split(',')}
     if parsed.scheme not in ('http', 'https') or parsed.hostname not in hosts:
-        raise Error('Repository URL is outside INTERNAL_HOSTS')
+        raise Error(f'Repository host is not in ALLOWED_HOSTS: {parsed.hostname}')
     if parsed.username or parsed.password:
         raise Error('Use secret configuration files for repository credentials')
     return url
 
 def local_image(image, env):
-    if '/' not in image or urlparse('https://' + image.split('/')[0]).hostname not in {x.strip() for x in need(env, 'INTERNAL_HOSTS').split(',')}:
-        raise Error(f"Image must use an INTERNAL_HOSTS registry: {image}")
+    if '/' not in image or urlparse('https://' + image.split('/')[0]).hostname not in {x.strip() for x in need(env, 'ALLOWED_HOSTS').split(',')}:
+        raise Error(f"Image registry is not in ALLOWED_HOSTS: {image}")
     if ':latest' in image or (':' not in image.rsplit('/', 1)[-1] and '@sha256:' not in image):
         raise Error('Use a versioned image tag or digest')
 
 def check_repos(root, env):
+    """Empty YUM_REPO_FILE keeps the base image's own repositories."""
     import configparser
-    repo = root / need(env, 'YUM_REPO_FILE')
+    if not env.get('YUM_REPO_FILE'):
+        return None
+    repo = root / env['YUM_REPO_FILE']
     parser = configparser.ConfigParser(interpolation=None)
     if not parser.read(repo) or not parser.sections():
-        raise Error('YUM_REPO_FILE must contain internal repository definitions')
+        raise Error('YUM_REPO_FILE must contain repository definitions')
     for section in parser.values():
         if section is parser.defaults():
             continue
         if section.get('mirrorlist') or section.get('metalink'):
-            raise Error('YUM repositories must use explicit internal baseurl values')
+            raise Error('YUM repositories must use explicit baseurl values')
         for url in section.get('baseurl', '').split():
             allowed_url(url, env)
         for url in section.get('gpgkey', '').split():
@@ -111,7 +114,8 @@ def docker_build(root, env, file, tag, args=None, secrets=None, target=None):
     for key, value in (args or {}).items():
         command += ['--build-arg', f'{key}={value}']
     for key, path in (secrets or {}).items():
-        command += ['--secret', f'id={key},src={path}']
+        if path:
+            command += ['--secret', f'id={key},src={path}']
     if target:
         command += ['--target', target]
     run(*command, root)

@@ -6,7 +6,7 @@ This content is prepared for `staging/data-services`. Remote repository creation
 
 ## Setup
 
-Copy `.env.example` to `.env`, `config/internal.repo.example` to `config/internal.repo`, and provide `config/ca.pem`. Configure internal image references, registry host allowlist, package versions, data-host DNS and bind address/ports. Preload the runtime base image. The base needs CA trust tooling and `dnf`/`microdnf`; use full AlmaLinux 9 or UBI 9. Signatures remain enabled in the example YUM configuration; supply matching vendor signing keys through internal URLs or the base image.
+Copy `.env.example` to `.env`, `config/yum.repo.example` to `config/yum.repo`, and provide `config/ca.pem`. Configure internal image references, registry host allowlist, package versions, data-host DNS and bind address/ports. Preload the runtime base image. The base needs CA trust tooling and `dnf`/`microdnf`; use full AlmaLinux 9 or UBI 9. Signatures remain enabled in the example YUM configuration; supply matching vendor signing keys through internal URLs or the base image.
 
 Run these with Docker access:
 

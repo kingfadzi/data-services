@@ -4,15 +4,16 @@ USER root
 COPY config/ca.pem /etc/pki/ca-trust/source/anchors/site.crt
 COPY containers/install-rpms.sh /tmp/install-rpms.sh
 RUN update-ca-trust
-RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh shadow-utils util-linux-core curl procps-ng
+RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh shadow-utils util-linux-core procps-ng
 
 FROM base AS elasticsearch
 ARG ELASTIC_PACKAGE
-ENV ES_PATH_CONF=/usr/share/elasticsearch/config ES_JAVA_OPTS="-Xms1g -Xmx1g"
+# The RPM forces ES_PATH_CONF=/etc/elasticsearch via /etc/sysconfig; its install-time auto-configuration is removed.
+ENV ES_PATH_CONF=/etc/elasticsearch ES_JAVA_OPTS="-Xms1g -Xmx1g"
 RUN --mount=type=secret,id=yum_repo sh /tmp/install-rpms.sh "$ELASTIC_PACKAGE" && \
-    mkdir -p /usr/share/elasticsearch/config /usr/share/elasticsearch/data /usr/share/elasticsearch/logs && \
-    cp -a /etc/elasticsearch/. /usr/share/elasticsearch/config/ && \
-    chown -R elasticsearch:elasticsearch /usr/share/elasticsearch
+    rm -rf /etc/elasticsearch/certs /etc/elasticsearch/elasticsearch.keystore /etc/elasticsearch/elasticsearch.yml && \
+    mkdir -p /usr/share/elasticsearch/data /usr/share/elasticsearch/logs && \
+    chown -R elasticsearch:elasticsearch /usr/share/elasticsearch /etc/elasticsearch
 COPY containers/elastic-entrypoint.sh /usr/local/bin/start-elastic
 COPY containers/health.sh /usr/local/bin/health
 RUN chmod +x /usr/local/bin/start-elastic /usr/local/bin/health

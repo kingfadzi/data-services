@@ -1,7 +1,7 @@
 .env
 generated/
 dist/
-config/internal.repo
+config/yum.repo
 config/ca.pem
 config/tls/
 __pycache__/
