@@ -16,6 +16,7 @@ class RenderTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.env = render.env_file(ROOT / '.env.example')
+        self.env['DATA_HOST'] = 'data-host'  # placeholder in the example is CHANGE_ME
 
     def tearDown(self):
         self.temp.cleanup()
