@@ -11,6 +11,7 @@ declare -A ENV
 
 usage() {
   echo "usage: datactl [--env FILE] [--from STEP] {configure|pull|build|preflight|install|verify|status|bundle|load [--archive PATH]}" >&2
+  echo "       datactl [--env FILE] mongo-restore --dump PATH [--db NAME] [--to-db NAME] [--drop]" >&2
   echo "chain: configure pull build preflight install verify (each runs every earlier step; --from starts later)" >&2
   exit 2
 }
@@ -223,6 +224,38 @@ cmd_bundle() {
   echo "Bundle exported to dist/ without credentials; transfer site configuration separately."
 }
 
+cmd_mongo_restore() {
+  # Restore a mongodump (directory or --archive file) into the running MongoDB as the admin user.
+  local dump=$1 db=$2 to_db=$3 drop=$4 container=data-services-mongo-1 name tls= args=()
+  [[ -n $dump ]] || die "mongo-restore needs --dump PATH (mongodump directory or archive file)"
+  [[ -e $dump ]] || die "Dump not found: $dump"
+  [[ $(docker inspect --format '{{.State.Health.Status}}' "$container" 2>/dev/null) == healthy ]] || die "MongoDB container is not healthy"
+  [[ $(boolean TLS_ENABLED) == true ]] && tls="--ssl --sslCAFile /tls/ca.pem"  # database tools use the ssl spelling
+  name=$(basename "$dump")
+  docker exec "$container" sh -c 'rm -rf /tmp/restore && mkdir -p /tmp/restore'
+  docker cp "$dump" "$container:/tmp/restore/$name"
+  if [[ -f $dump ]]; then
+    args+=("--archive=/tmp/restore/$name")
+    [[ $name == *.gz ]] && args+=(--gzip)
+  else
+    args+=("/tmp/restore/$name")
+  fi
+  if [[ -n $db && -n $to_db ]]; then
+    args+=(--nsInclude "$db.*" --nsFrom "$db.*" --nsTo "$to_db.*")
+  elif [[ -n $db ]]; then
+    args+=(--nsInclude "$db.*")
+  elif [[ -n $to_db ]]; then
+    die "--to-db needs --db (the database name inside the dump)"
+  fi
+  [[ $drop == true ]] && args+=(--drop)
+  # shellcheck disable=SC2016
+  docker exec "$container" sh -c 'mongorestore --host 127.0.0.1 '"$tls"' -u "$(cat /run/secrets/mongo_root_username)" -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin "$@"' sh "${args[@]}"
+  local rc=$?
+  docker exec "$container" rm -rf /tmp/restore
+  ((rc == 0)) || die "mongorestore failed"
+  echo "Restore finished${db:+ (database $db${to_db:+ -> $to_db})}"
+}
+
 cmd_load() {
   local archive=${ARCHIVE:-$ROOT/dist/images.tar} dir
   [[ -f $archive ]] || die "Image archive not found: $archive"
@@ -235,12 +268,17 @@ cmd_load() {
 CHAIN=(configure pull build preflight install verify)
 COMMAND=
 FROM=
+DUMP= DB= TO_DB= DROP=false
 while (($#)); do
   case $1 in
     --env) [[ $# -ge 2 ]] || usage; ENV_FILE=$2; shift 2 ;;
     --from) [[ $# -ge 2 ]] || usage; FROM=$2; shift 2 ;;
     --archive) [[ $# -ge 2 ]] || usage; ARCHIVE=$2; shift 2 ;;
-    configure | pull | build | preflight | install | verify | status | bundle | load) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
+    --dump) [[ $# -ge 2 ]] || usage; DUMP=$2; shift 2 ;;
+    --db) [[ $# -ge 2 ]] || usage; DB=$2; shift 2 ;;
+    --to-db) [[ $# -ge 2 ]] || usage; TO_DB=$2; shift 2 ;;
+    --drop) DROP=true; shift ;;
+    configure | pull | build | preflight | install | verify | status | bundle | load | mongo-restore) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
     *) usage ;;
   esac
 done
@@ -252,6 +290,7 @@ case $COMMAND in
   status) compose ps ;;
   bundle) cmd_bundle ;;
   load) cmd_load ;;
+  mongo-restore) cmd_mongo_restore "$DUMP" "$DB" "$TO_DB" "$DROP" ;;
   *)
     last=$(chain_index "$COMMAND")
     first=0

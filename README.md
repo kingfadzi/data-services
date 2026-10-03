@@ -23,7 +23,7 @@ cat generated/clearml.env     # paste into the ClearML .env
 ## Commands
 
 Chain (each runs every earlier step): `configure` `pull` `build` `preflight` `install` `verify`.
-Standalone: `status` `bundle` `load`. Options: `--env FILE`, `--from STEP`, `--archive PATH`.
+Standalone: `status` `bundle` `load` `mongo-restore`. Options: `--env FILE`, `--from STEP`, `--archive PATH`.
 
 ## Tests
 

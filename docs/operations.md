@@ -25,6 +25,23 @@ Re-running `configure` on a live stack is safe; staged files are overwritten in 
 - Mongo admin: `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD` from that file.
 - Rotation: change in the database with the vendor tools, then edit `credentials.json`, then `./datactl install --from configure`.
 
+## Restore a MongoDB dump (any database)
+
+Hydrate a database from a `mongodump` output, for ClearML or any other application sharing this MongoDB.
+
+```sh
+./datactl mongo-restore --dump /path/to/dumpdir                      # everything in the dump
+./datactl mongo-restore --dump /path/to/dumpdir --db sales --drop    # one database, replace existing collections
+./datactl mongo-restore --dump /path/to/sales.archive.gz --db sales --to-db sales_test   # archive, restore under another name
+```
+
+- `--dump`: directory from `mongodump --out` (contains `<db>/` folders) or a file from `mongodump --archive` (`.gz` handled).
+- `--db`: database name inside the dump to restore (others skipped).
+- `--to-db`: rename on restore; needs `--db`.
+- `--drop`: drop each collection before restoring it.
+- Runs `mongorestore` inside the Mongo container as the admin user; TLS handled automatically. The dump is copied in and removed afterwards.
+- Application users for that database are not created; add them with `mongosh` as admin.
+
 ## Volumes and backup
 
 - `data-services_elasticsearch-data`, `data-services_mongo-data`, `data-services_redis-data`.

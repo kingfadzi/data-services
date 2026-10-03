@@ -75,7 +75,7 @@ class RenderTests(unittest.TestCase):
         env=self.root/'bad.env'; env.write_text('A=1\nA=2\n')
         self.assertNotEqual(subprocess.run(['bash',str(ROOT/'datactl'),'--env',str(env),'status'],capture_output=True).returncode,0)
         text=(ROOT/'datactl').read_text()
-        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('BASE_IMAGE',text); self.assertNotIn('TOOLBOX_IMAGE',text); self.assertNotIn('REDIS_BASE_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text())
+        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('BASE_IMAGE',text); self.assertIn('mongo-restore',text); self.assertNotIn('TOOLBOX_IMAGE',text); self.assertNotIn('REDIS_BASE_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text())
     def test_datactl_is_bash_and_parses(self):
         subprocess.run(['bash', '-n', str(ROOT / 'datactl')], check=True)
         text = (ROOT / 'datactl').read_text()
