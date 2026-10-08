@@ -1,4 +1,4 @@
-# Vendor images for Elasticsearch and MongoDB, locally built Redis. Interpolated from .env and generated/compose.env (written by `datactl configure`).
+# Vendor images for Elasticsearch and MongoDB, locally built Redis and SQL Server. Interpolated from .env and generated/compose.env (written by `datactl configure`).
 name: data-services
 
 x-health: &health
@@ -71,10 +71,41 @@ services:
       <<: *health
       test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli ${REDIS_HEALTH_TLS} ping | grep -q PONG"]
 
+  sqlserver:
+    image: ${SQLSERVER_FTS_IMAGE}
+    pull_policy: never
+    restart: unless-stopped
+    user: "${SQLSERVER_UID}"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: ${SQLSERVER_EDITION}
+      SQLSERVER_DB: ${SQLSERVER_DB}
+      SQLSERVER_USERNAME: ${SQLSERVER_USERNAME}
+    ports:
+      - "${BIND_ADDRESS}:${SQLSERVER_PORT}:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      - ./generated/mssql.conf:/var/opt/mssql/mssql.conf:ro,z
+      - ./init/sqlserver:/docker-entrypoint-initdb.d:ro,z
+      - ${SQLSERVER_TLS_DIR}:/tls:ro,z
+    secrets:
+      - sqlserver_sa_password
+      - sqlserver_password
+    # Not the shared x-health anchor: the entrypoint's readiness streak and the init scripts run
+    # before the first probe can pass. -d targets the application database, so healthy means that
+    # database is online rather than just master. -C trusts the certificate, with or without TLS.
+    healthcheck:
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 60s
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$(cat /run/secrets/sqlserver_sa_password)\" -d ${SQLSERVER_DB} -C -b -Q 'SET NOCOUNT ON; SELECT 1' >/dev/null"]
+
 volumes:
   elasticsearch-data: {}
   mongo-data: {}
   redis-data: {}
+  sqlserver-data: {}
 
 # Staged by `datactl configure` with each service user's uid and mode 400.
 secrets:
@@ -88,3 +119,7 @@ secrets:
     file: ./generated/private/mongo/mongo_root_password
   mongo_credentials:
     file: ./generated/private/mongo/mongo_credentials
+  sqlserver_sa_password:
+    file: ./generated/private/sqlserver/sqlserver_sa_password
+  sqlserver_password:
+    file: ./generated/private/sqlserver/sqlserver_password

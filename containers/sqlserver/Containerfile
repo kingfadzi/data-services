@@ -1,0 +1,25 @@
+# Full-Text Search is not in the vendor SQL Server image; mssql-server-fts comes from the Microsoft
+# package repository. mssql-tools18 (sqlcmd) already ships in the image and is not reinstalled.
+# Proxy and private CA come from SQLSERVER_IMAGE; curl/gnupg are only for the Microsoft repo key.
+ARG SQLSERVER_IMAGE
+FROM ${SQLSERVER_IMAGE}
+
+USER root
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+      | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+ && echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main" \
+      > /etc/apt/sources.list.d/mssql-server-2022.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends mssql-server-fts \
+ && apt-get purge -y --auto-remove curl gnupg \
+ && rm -rf /var/lib/apt/lists/*
+USER mssql
+
+COPY --chmod=755 entrypoint.sh /usr/local/bin/
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

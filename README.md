@@ -1,16 +1,17 @@
 # data-services
 
-Elasticsearch, MongoDB and Redis for ClearML on one host with Docker Compose. Elasticsearch and MongoDB are the official images pulled from your registry; Redis is built from the RPM in your base image. Host needs bash, coreutils and docker only.
+Elasticsearch, MongoDB and Redis for ClearML, plus SQL Server with Full-Text Search, on one host with Docker Compose. Elasticsearch and MongoDB are the official images pulled from your registry; Redis is built from the RPM in your base image, and SQL Server is the vendor image with the FTS package added. Host needs bash, coreutils and docker only.
 
 ## Quickstart
 
 ```sh
 git clone <gitlab>/staging/data-services.git && cd data-services
 cp .env.example .env && chmod 600 .env
-# edit .env: ELASTIC_IMAGE, MONGO_IMAGE, BASE_IMAGE, DATA_HOST (TLS optional)
+# edit .env: ELASTIC_IMAGE, MONGO_IMAGE, SQLSERVER_IMAGE, BASE_IMAGE, DATA_HOST (TLS optional)
 ./datactl install
 ./datactl verify
 cat generated/clearml.env     # paste into the ClearML .env
+cat generated/sqlserver.env   # SQL Server connection settings
 ```
 
 ## Docs

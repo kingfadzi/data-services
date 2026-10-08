@@ -37,8 +37,35 @@ class RenderTests(unittest.TestCase):
         self.assertTrue((self.root / 'generated/mongo_root_password').stat().st_size)
         self.assertEqual((self.root / 'generated/credentials.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / 'generated/redis.conf').stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.root / 'generated/mssql.conf').stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.root / 'generated/sqlserver_sa_password').stat().st_mode & 0o777, 0o600)
+        self.assertIn('memorylimitmb = 2048', (self.root / 'generated/mssql.conf').read_text())
+        self.assertNotIn('[network]', (self.root / 'generated/mssql.conf').read_text())
+        sqlserver = render.env_file(self.root / 'generated/sqlserver.env')
+        self.assertEqual(sqlserver['SQLSERVER_HOST'], 'data-host')
+        self.assertIn('databaseName=appdb;encrypt=false', sqlserver['SQLSERVER_JDBC_URL'])
         self.assertEqual((self.root / 'generated/mongo_credentials').stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / 'generated').stat().st_mode & 0o777, 0o700)
+
+    def test_sqlserver_passwords_satisfy_the_policy(self):
+        # token_hex is lower case and digits only, which SQL Server refuses; see render.COMPLEX.
+        render.render(self.root, self.env, self.root)
+        import json
+        credentials = json.loads((self.root / 'generated/credentials.json').read_text())
+        for key in ('SQLSERVER_SA_PASSWORD', 'SQLSERVER_PASSWORD'):
+            self.assertRegex(credentials[key], render.COMPLEX)
+            self.assertEqual(credentials[key], (self.root / f'generated/{key.lower()}').read_text())
+
+    def test_sqlserver_password_without_complexity_fails(self):
+        self.env['SQLSERVER_SA_PASSWORD'] = 'alllowercaseandnodigits'
+        with self.assertRaises(render.Error):
+            render.render(self.root, self.env, self.root)
+
+    def test_sqlserver_login_cannot_silently_change(self):
+        render.render(self.root, self.env, self.root)
+        self.env['SQLSERVER_USERNAME'] = 'someone-else'
+        with self.assertRaises(render.Error):
+            render.render(self.root, self.env, self.root)
 
     def test_low_max_map_count_disables_mmap(self):
         import json
@@ -70,14 +97,18 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(compose_env['ES_SCHEME'], 'https')
         self.assertIn('tls-port 6379', (self.root / 'generated/redis.conf').read_text())
         self.assertEqual(render.env_file(self.root / 'generated/clearml.env')['REDIS_TLS'], 'true')
+        self.assertEqual(compose_env['SQLSERVER_TLS_DIR'], '/srv/data-services/generated/private/sqlserver/tls')
+        self.assertIn('forceencryption = 1', (self.root / 'generated/mssql.conf').read_text())
+        self.assertIn('encrypt=true', render.env_file(self.root / 'generated/sqlserver.env')['SQLSERVER_JDBC_URL'])
 
     def test_datactl_rejects_bad_env_and_honours_blank_allowlist(self):
         env=self.root/'bad.env'; env.write_text('A=1\nA=2\n')
         self.assertNotEqual(subprocess.run(['bash',str(ROOT/'datactl'),'--env',str(env),'status'],capture_output=True).returncode,0)
         text=(ROOT/'datactl').read_text()
-        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('BASE_IMAGE',text); self.assertIn('mongo-restore',text); self.assertNotIn('TOOLBOX_IMAGE',text); self.assertNotIn('REDIS_BASE_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text())
+        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('BASE_IMAGE',text); self.assertIn('mongo-restore',text); self.assertNotIn('TOOLBOX_IMAGE',text); self.assertNotIn('REDIS_BASE_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text()); self.assertIn('SQLSERVER_FTS_IMAGE', text); self.assertIn('stage sqlserver', text)
     def test_datactl_is_bash_and_parses(self):
         subprocess.run(['bash', '-n', str(ROOT / 'datactl')], check=True)
+        subprocess.run(['bash', '-n', str(ROOT / 'containers/sqlserver/entrypoint.sh')], check=True)
         text = (ROOT / 'datactl').read_text()
         self.assertTrue(text.startswith('#!/usr/bin/env bash'))
         # python3 may appear only inside the container invocation.
