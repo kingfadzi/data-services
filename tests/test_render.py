@@ -105,7 +105,22 @@ class RenderTests(unittest.TestCase):
         env=self.root/'bad.env'; env.write_text('A=1\nA=2\n')
         self.assertNotEqual(subprocess.run(['bash',str(ROOT/'datactl'),'--env',str(env),'status'],capture_output=True).returncode,0)
         text=(ROOT/'datactl').read_text()
-        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('BASE_IMAGE',text); self.assertIn('mongo-restore',text); self.assertNotIn('TOOLBOX_IMAGE',text); self.assertNotIn('REDIS_BASE_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text()); self.assertIn('SQLSERVER_FTS_IMAGE', text); self.assertIn('stage sqlserver', text)
+        self.assertNotIn('YUM_REPO_FILE',text); self.assertIn('BASE_IMAGE',text); self.assertIn('mongo-restore',text); self.assertNotIn('TOOLBOX_IMAGE',text); self.assertNotIn('REDIS_BASE_IMAGE',text); self.assertIn('pull_policy', (ROOT/'compose.yaml').read_text()); self.assertIn('SQLSERVER_FTS_IMAGE', text); self.assertIn('stage sqlserver', text); self.assertIn('cmd_restart', text); self.assertIn('wait_healthy', text)
+    def test_service_flag_validates_before_touching_env(self):
+        # These must fail on the flag itself, with no .env present and no Docker call.
+        def run(*args):
+            return subprocess.run(['bash', str(ROOT / 'datactl'), '--env', str(self.root / 'absent.env'), *args],
+                                  capture_output=True, text=True)
+        rejected = run('-s', 'redis', 'bundle')
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('--service does not apply to bundle', rejected.stderr)
+        unknown = run('-s', 'postgres', 'status')
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn('Unknown service: postgres', unknown.stderr)
+        for command in ('start', 'stop', 'restart'):
+            # Reaches the missing .env, which proves the command itself parsed.
+            self.assertIn('Missing', run(command, '-s', 'sqlserver').stderr)
+
     def test_datactl_is_bash_and_parses(self):
         subprocess.run(['bash', '-n', str(ROOT / 'datactl')], check=True)
         subprocess.run(['bash', '-n', str(ROOT / 'containers/sqlserver/entrypoint.sh')], check=True)

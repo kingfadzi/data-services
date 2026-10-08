@@ -23,7 +23,9 @@
 | `sqlserver` container exits seconds after start | host memory below ~2 GB, or `SQLSERVER_MEMORY_LIMIT_MB` set too low | free memory; `preflight` prints a note |
 | `install` times out waiting for `sqlserver` | first start after an engine upgrade sits in script upgrade mode | `docker logs -f data-services-sqlserver-1`, wait for `Initialization complete.`, then `./datactl install --from install` |
 | SQL Server logs a TLS certificate or key error | key is encrypted or not PKCS#8, or not readable by uid 10001 | re-issue the key unencrypted in PKCS#8, then `./datactl install --from configure` |
-| Edited `init/sqlserver/*.sql` had no effect | that file's marker already exists in the volume | `docker exec data-services-sqlserver-1 rm /var/opt/mssql/.init-done/<file>` and restart |
+| Edited `init/sqlserver/*.sql` had no effect | that file's marker already exists in the volume | `docker exec data-services-sqlserver-1 rm /var/opt/mssql/.init-done/<file>`, then `./datactl restart -s sqlserver` |
+| `Nothing to start: run ./datactl install first` | `start` was used before the containers existed | `./datactl install` |
+| `--service does not apply to <command>` | `-s` passed to a whole-stack command such as `bundle` | drop the flag |
 
 ## Useful commands
 

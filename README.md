@@ -24,7 +24,16 @@ cat generated/sqlserver.env   # SQL Server connection settings
 ## Commands
 
 Chain (each runs every earlier step): `configure` `pull` `build` `preflight` `install` `verify`.
-Standalone: `status` `bundle` `load` `mongo-restore`. Options: `--env FILE`, `--from STEP`, `--archive PATH`.
+Standalone: `status` `start` `stop` `restart` `bundle` `load` `mongo-restore`.
+Options: `--env FILE`, `--from STEP`, `--archive PATH`, `-s`/`--service NAME`.
+
+`-s` limits `install`, `verify`, `status`, `start`, `stop` and `restart` to one service and may be
+repeated; `configure`, `pull` and `build` always cover the whole stack.
+
+```sh
+./datactl restart -s sqlserver        # restart one service, waiting for it to be healthy again
+./datactl stop -s redis -s mongo      # stop two, leave the rest running
+```
 
 ## Tests
 

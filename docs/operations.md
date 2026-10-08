@@ -7,9 +7,9 @@ Chain: `configure` → `pull` → `build` → `preflight` → `install` → `ver
 | Changed | Run |
 |---|---|
 | ports, `DATA_HOST`, `ELASTIC_HEAP` | `./datactl install --from configure`, then update the ClearML `.env` from `generated/clearml.env` |
-| TLS files or `TLS_ENABLED` | `./datactl install --from configure`, then `docker compose -p data-services restart` |
+| TLS files or `TLS_ENABLED` | `./datactl install --from configure`, then `./datactl restart` |
 | `REDIS_PACKAGE`, `BASE_IMAGE`, `SQLSERVER_IMAGE` | `./datactl install` |
-| `SQLSERVER_EDITION`, `SQLSERVER_MEMORY_LIMIT_MB` | `./datactl install --from configure`, then `docker compose -p data-services restart sqlserver` |
+| `SQLSERVER_EDITION`, `SQLSERVER_MEMORY_LIMIT_MB` | `./datactl install --from configure`, then `./datactl restart -s sqlserver` |
 
 Re-running `configure` on a live stack is safe; staged files are overwritten in place.
 
@@ -67,12 +67,23 @@ Hydrate a database from a `mongodump` output, for ClearML or any other applicati
 - Back up with vendor tools (`mongodump`, Elasticsearch snapshots, Redis AOF copy, `BACKUP DATABASE`) before upgrades.
 - Never `docker compose down -v`.
 
-## Restart
+## Start, stop and restart
 
 ```sh
-docker compose -p data-services restart
-./datactl verify
+./datactl stop                        # whole stack, containers kept
+./datactl start                       # resume it, waiting for health
+./datactl restart -s sqlserver        # one service only
+./datactl status -s sqlserver
 ```
+
+- `-s`/`--service NAME` takes `elasticsearch`, `mongo`, `redis` or `sqlserver` and may be repeated.
+  It applies to `install`, `verify`, `status`, `start`, `stop` and `restart`; `configure`, `pull`
+  and `build` always cover the whole stack, so `install -s sqlserver` still re-renders the shared
+  configuration and only then recreates that one container.
+- `start` and `restart` wait for health rather than returning at "Started", because Compose reports
+  a started container long before SQL Server accepts queries. They print `waiting for: <service>`
+  while they wait and give up after 600s.
+- `start` only resumes containers that already exist; use `install` to create them.
 
 ## Transfer
 

@@ -10,9 +10,11 @@ declare -A IMAGE_KEY=([elasticsearch]=ELASTIC_IMAGE [mongo]=MONGO_IMAGE [redis]=
 declare -A ENV
 
 usage() {
-  echo "usage: datactl [--env FILE] [--from STEP] {configure|pull|build|preflight|install|verify|status|bundle|load [--archive PATH]}" >&2
+  echo "usage: datactl [--env FILE] [--from STEP] [-s NAME]... {configure|pull|build|preflight|install|verify|status|start|stop|restart|bundle|load [--archive PATH]}" >&2
   echo "       datactl [--env FILE] mongo-restore --dump PATH [--db NAME] [--to-db NAME] [--drop]" >&2
   echo "chain: configure pull build preflight install verify (each runs every earlier step; --from starts later)" >&2
+  echo "-s, --service NAME: limit install, verify, status, start, stop and restart to one service, repeatable." >&2
+  echo "                   Names: ${SERVICES[*]}. configure, pull and build always cover the whole stack." >&2
   exit 2
 }
 
@@ -95,6 +97,11 @@ ensure_image() {
   docker image inspect "$1" >/dev/null 2>&1 && return 0
   echo "Pulling $1"
   docker pull "$1" || die "Could not pull image: $1"
+}
+
+scope() {
+  # The services this invocation acts on: the --service targets, or every service.
+  if ((${#TARGETS[@]})); then printf '%s\n' "${TARGETS[@]}"; else printf '%s\n' "${SERVICES[@]}"; fi
 }
 
 all_images() {
@@ -219,12 +226,12 @@ cmd_preflight() {
   compose config --quiet
 }
 
-unhealthy_report() {
+unhealthy_report() { # services...
   # `compose --wait` fails with only "application not healthy after Ns": it never says which
   # service or why. Name every service's health and show the tail of whichever is not healthy.
   local service status
   echo >&2
-  for service in "${SERVICES[@]}"; do
+  for service in "$@"; do
     status=$(docker inspect --format '{{.State.Health.Status}}' "data-services-$service-1" 2>/dev/null) || status=missing
     echo "$service: $status" >&2
     # No container means no log to tail; "missing" already said everything there is to say.
@@ -235,21 +242,76 @@ unhealthy_report() {
   die "Stack did not become healthy; see the status and logs above"
 }
 
+wait_healthy() { # services...
+  # compose start/restart return as soon as the container is Started; health follows later, and for
+  # SQL Server that is minutes. Poll until everything in scope is healthy, failing fast if a
+  # container is not running at all (a stopped container reports health "unhealthy" forever).
+  local deadline=$((SECONDS + 600)) service state health
+  local -a pending=()
+  while :; do
+    pending=()
+    for service in "$@"; do
+      state=$(docker inspect --format '{{.State.Status}}' "data-services-$service-1" 2>/dev/null) || state=missing
+      [[ $state == running ]] || die "$service is $state, not running: run ./datactl install"
+      # A service without a healthcheck has nothing to wait for; running is as good as it gets.
+      health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "data-services-$service-1")
+      [[ -z $health || $health == healthy ]] || pending+=("$service")
+    done
+    if ((${#pending[@]} == 0)); then
+      echo "healthy: $*"
+      return 0
+    fi
+    ((SECONDS < deadline)) || break
+    echo "waiting for: ${pending[*]}"
+    sleep 5
+  done
+  unhealthy_report "$@"
+}
+
+cmd_start() {
+  local -a services=()
+  mapfile -t services < <(scope)
+  # compose start only resumes containers that already exist; it cannot create them.
+  compose start "${TARGETS[@]}" || die "Nothing to start: run ./datactl install first"
+  wait_healthy "${services[@]}"
+}
+
+cmd_stop() {
+  compose stop "${TARGETS[@]}"
+}
+
+cmd_restart() {
+  local -a services=()
+  mapfile -t services < <(scope)
+  compose restart "${TARGETS[@]}" || die "Nothing to restart: run ./datactl install first"
+  wait_healthy "${services[@]}"
+}
+
 cmd_install() {
   # 600s, not 300: SQL Server's first start waits out "script upgrade mode" and applies its init
   # scripts before the healthcheck can pass. Compose prints one "Waiting" line and then nothing
   # until health flips, so say up front where to watch during that gap.
-  echo "Starting containers, then waiting for health (up to 600s)"
+  local -a services=()
+  mapfile -t services < <(scope)
+  echo "Starting containers, then waiting for health (up to 600s): ${services[*]}"
   echo "SQL Server is the slow one on a first start: docker logs -f data-services-sqlserver-1"
-  compose up -d --no-build --wait --wait-timeout 600 || unhealthy_report
+  compose up -d --no-build --wait --wait-timeout 600 "${TARGETS[@]}" || unhealthy_report "${services[@]}"
 }
 
 cmd_verify() {
   local service
-  for service in "${SERVICES[@]}"; do
+  local -a services=()
+  mapfile -t services < <(scope)
+  for service in "${services[@]}"; do
     [[ $(docker inspect --format '{{.State.Health.Status}}' "data-services-$service-1" 2>/dev/null) == healthy ]] || die "$service is not healthy"
     echo "$service: healthy"
   done
+  # The full-text assertion is SQL Server's; skip it when --service excluded that service.
+  local scoped_sqlserver=false
+  for service in "${services[@]}"; do
+    if [[ $service == sqlserver ]]; then scoped_sqlserver=true; fi
+  done
+  if [[ $scoped_sqlserver == false ]]; then return 0; fi
   local installed
   installed=$(docker exec data-services-sqlserver-1 sh -c \
     "/opt/mssql-tools18/bin/sqlcmd -C -b -S localhost -U sa -P \"\$(cat /run/secrets/sqlserver_sa_password)\" \
@@ -319,6 +381,7 @@ cmd_load() {
 CHAIN=(configure pull build preflight install verify)
 COMMAND=
 FROM=
+TARGETS=()
 DUMP= DB= TO_DB= DROP=false
 while (($#)); do
   case $1 in
@@ -329,16 +392,31 @@ while (($#)); do
     --db) [[ $# -ge 2 ]] || usage; DB=$2; shift 2 ;;
     --to-db) [[ $# -ge 2 ]] || usage; TO_DB=$2; shift 2 ;;
     --drop) DROP=true; shift ;;
-    configure | pull | build | preflight | install | verify | status | bundle | load | mongo-restore) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
+    --service | -s) [[ $# -ge 2 ]] || usage; TARGETS+=("$2"); shift 2 ;;
+    configure | pull | build | preflight | install | verify | status | start | stop | restart | bundle | load | mongo-restore) [[ -z $COMMAND ]] || usage; COMMAND=$1; shift ;;
     *) usage ;;
   esac
 done
 [[ -n $COMMAND ]] || usage
+# --service only means something for the commands that act on running containers. Rejecting it
+# elsewhere beats silently ignoring it on, say, `bundle`.
+if ((${#TARGETS[@]})); then
+  case $COMMAND in
+    install | verify | status | start | stop | restart) ;;
+    *) die "--service does not apply to $COMMAND" ;;
+  esac
+  for target in "${TARGETS[@]}"; do
+    known=false
+    for service in "${SERVICES[@]}"; do [[ $service == "$target" ]] && known=true; done
+    [[ $known == true ]] || die "Unknown service: $target (one of: ${SERVICES[*]})"
+  done
+fi
 ENV_PATH=$(abs "$ENV_FILE")
 read_env "$ENV_PATH"
 chain_index() { local i; for i in "${!CHAIN[@]}"; do [[ ${CHAIN[$i]} == "$1" ]] && { echo "$i"; return; }; done; return 1; }
 case $COMMAND in
-  status) compose ps ;;
+  status) compose ps "${TARGETS[@]}" ;;
+  start | stop | restart) "cmd_$COMMAND" ;;
   bundle) cmd_bundle ;;
   load) cmd_load ;;
   mongo-restore) cmd_mongo_restore "$DUMP" "$DB" "$TO_DB" "$DROP" ;;
