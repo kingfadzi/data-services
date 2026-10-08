@@ -5,8 +5,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ENV_FILE=.env
 ARCHIVE=
-SERVICES=(elasticsearch mongo redis)
-declare -A IMAGE_KEY=([elasticsearch]=ELASTIC_IMAGE [mongo]=MONGO_IMAGE [redis]=REDIS_IMAGE)
+SERVICES=(elasticsearch mongo redis sqlserver)
+declare -A IMAGE_KEY=([elasticsearch]=ELASTIC_IMAGE [mongo]=MONGO_IMAGE [redis]=REDIS_IMAGE [sqlserver]=SQLSERVER_FTS_IMAGE)
 declare -A ENV
 
 usage() {
@@ -120,6 +120,7 @@ stage_private() {
   mkdir -p "$ROOT/generated/private"
   docker run --rm -v "$ROOT/generated:/generated" ${src:+-v "$src:/src:ro"} -e "TLS=$tls" \
     -e "ES_UID=${ENV[ELASTIC_UID]:-1000}" -e "MONGO_UID=${ENV[MONGO_UID]:-999}" -e "REDIS_UID=${ENV[REDIS_UID]:-1001}" \
+    -e "SQLSERVER_UID=${ENV[SQLSERVER_UID]:-10001}" \
     "$toolbox" sh -c '
       set -e
       cd /generated
@@ -141,7 +142,8 @@ stage_private() {
       }
       stage elasticsearch "$ES_UID" elastic_password
       stage mongo "$MONGO_UID" mongo_root_username mongo_root_password mongo_credentials
-      stage redis "$REDIS_UID" redis_password' || die "Could not stage private files"
+      stage redis "$REDIS_UID" redis_password
+      stage sqlserver "$SQLSERVER_UID" sqlserver_sa_password sqlserver_password' || die "Could not stage private files"
 }
 
 cmd_configure() {
@@ -172,10 +174,11 @@ proxy_args() {
 }
 
 cmd_pull() {
-  # Vendor images only; the Redis image is built locally.
-  local service image
-  for service in elasticsearch mongo; do
-    image=$(need "${IMAGE_KEY[$service]}")
+  # Vendor images only; Redis and SQL Server are built locally. SQLSERVER_IMAGE is the SQL Server
+  # build base rather than a service image, so this loops over keys instead of IMAGE_KEY services.
+  local key image
+  for key in ELASTIC_IMAGE MONGO_IMAGE SQLSERVER_IMAGE; do
+    image=$(need "$key")
     check_image "$image"
     ensure_image "$image"
   done
@@ -193,16 +196,31 @@ cmd_build() {
   docker build --pull=false --network "${ENV[BUILD_NETWORK]:-default}" -f "$ROOT/containers/Containerfile" \
     --build-arg "BASE_IMAGE=$base" --build-arg "REDIS_PACKAGE=$(need REDIS_PACKAGE)" --build-arg "REDIS_UID=${ENV[REDIS_UID]:-1001}" \
     "${proxy[@]}" -t "$image" "$ROOT/containers"
+  # Full-Text Search is not in the vendor SQL Server image; this build adds it.
+  local sqlbase sqlimage
+  sqlbase=$(need SQLSERVER_IMAGE)
+  check_image "$sqlbase"
+  ensure_image "$sqlbase"
+  sqlimage=$(need SQLSERVER_FTS_IMAGE)
+  output_tag "$sqlimage"
+  docker build --pull=false --network "${ENV[BUILD_NETWORK]:-default}" -f "$ROOT/containers/sqlserver/Containerfile" \
+    --build-arg "SQLSERVER_IMAGE=$sqlbase" "${proxy[@]}" -t "$sqlimage" "$ROOT/containers/sqlserver"
 }
 
 cmd_preflight() {
   (($(<"/proc/sys/vm/max_map_count") >= 262144)) || echo "Note: vm.max_map_count is below 262144; Elasticsearch runs without mmap storage"
   docker image inspect "$(need REDIS_IMAGE)" >/dev/null 2>&1 || die "Redis image not built yet: run ./datactl build"
+  docker image inspect "$(need SQLSERVER_FTS_IMAGE)" >/dev/null 2>&1 || die "SQL Server image not built yet: run ./datactl build"
+  local mem_kb
+  mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+  ((mem_kb >= 2000000)) || echo "Note: host memory is below 2 GB; SQL Server refuses to start"
   compose config --quiet
 }
 
 cmd_install() {
-  compose up -d --no-build --wait --wait-timeout 300
+  # 600s, not 300: SQL Server's first start waits out "script upgrade mode" and applies its init
+  # scripts before the healthcheck can pass.
+  compose up -d --no-build --wait --wait-timeout 600
 }
 
 cmd_verify() {
@@ -211,6 +229,13 @@ cmd_verify() {
     [[ $(docker inspect --format '{{.State.Health.Status}}' "data-services-$service-1" 2>/dev/null) == healthy ]] || die "$service is not healthy"
     echo "$service: healthy"
   done
+  local installed
+  installed=$(docker exec data-services-sqlserver-1 sh -c \
+    "/opt/mssql-tools18/bin/sqlcmd -C -b -S localhost -U sa -P \"\$(cat /run/secrets/sqlserver_sa_password)\" \
+     -h -1 -W -Q \"SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('IsFullTextInstalled') AS INT)\"" 2>/dev/null |
+    head -n1 | tr -d '[:space:]')
+  [[ $installed == 1 ]] || die "SQL Server has no full-text search (IsFullTextInstalled=$installed): run ./datactl build"
+  echo "sqlserver: full-text search installed"
 }
 
 cmd_bundle() {

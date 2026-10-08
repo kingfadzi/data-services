@@ -8,7 +8,8 @@ Chain: `configure` → `pull` → `build` → `preflight` → `install` → `ver
 |---|---|
 | ports, `DATA_HOST`, `ELASTIC_HEAP` | `./datactl install --from configure`, then update the ClearML `.env` from `generated/clearml.env` |
 | TLS files or `TLS_ENABLED` | `./datactl install --from configure`, then `docker compose -p data-services restart` |
-| `REDIS_PACKAGE`, `BASE_IMAGE` | `./datactl install` |
+| `REDIS_PACKAGE`, `BASE_IMAGE`, `SQLSERVER_IMAGE` | `./datactl install` |
+| `SQLSERVER_EDITION`, `SQLSERVER_MEMORY_LIMIT_MB` | `./datactl install --from configure`, then `docker compose -p data-services restart sqlserver` |
 
 Re-running `configure` on a live stack is safe; staged files are overwritten in place.
 
@@ -42,10 +43,28 @@ Hydrate a database from a `mongodump` output, for ClearML or any other applicati
 - Runs `mongorestore` inside the Mongo container as the admin user; TLS handled automatically. The dump is copied in and removed afterwards.
 - Application users for that database are not created; add them with `mongosh` as admin.
 
+## SQL Server and Full-Text Search
+
+- `SQLSERVER_FTS_IMAGE` is the vendor image plus `mssql-server-fts`. `./datactl verify` asserts
+  `SERVERPROPERTY('IsFullTextInstalled') = 1`, and the container's entrypoint refuses to stay up
+  without it, so a stack that is up has FTS.
+- `init/sqlserver/*.sql` is applied by the entrypoint on start, one marker per file under
+  `/var/opt/mssql/.init-done/` in the volume. Adding `03-something.sql` applies just that file on the
+  next start; editing an already-applied file does nothing until you remove its marker.
+- `SQLSERVER_DB` gets `<db>_ft` as its default full-text catalog. Per-table full-text indexes belong
+  to whoever owns the schema:
+
+  ```sql
+  CREATE FULLTEXT INDEX ON dbo.docs (body) KEY INDEX PK_docs;
+  ```
+
+- Back up with `BACKUP DATABASE` inside the container; the SA password is in `generated/credentials.json`.
+
 ## Volumes and backup
 
-- `data-services_elasticsearch-data`, `data-services_mongo-data`, `data-services_redis-data`.
-- Back up with vendor tools (`mongodump`, Elasticsearch snapshots, Redis AOF copy) before upgrades.
+- `data-services_elasticsearch-data`, `data-services_mongo-data`, `data-services_redis-data`,
+  `data-services_sqlserver-data`.
+- Back up with vendor tools (`mongodump`, Elasticsearch snapshots, Redis AOF copy, `BACKUP DATABASE`) before upgrades.
 - Never `docker compose down -v`.
 
 ## Restart
@@ -70,3 +89,6 @@ cp /secure/.env .; cp -r /secure/generated/credentials.json generated/
 
 - Elasticsearch does not support downgrades; new minor versions follow the vendor upgrade path.
 - Redis version follows the base image's repository (`REDIS_PACKAGE` unpinned).
+- SQL Server: moving `SQLSERVER_IMAGE` to a newer CU rebuilds the FTS image and upgrades the
+  databases in place on first start. That upgrade is what the entrypoint's readiness streak waits
+  out, so allow several minutes and do not interrupt it.
