@@ -219,10 +219,29 @@ cmd_preflight() {
   compose config --quiet
 }
 
+unhealthy_report() {
+  # `compose --wait` fails with only "application not healthy after Ns": it never says which
+  # service or why. Name every service's health and show the tail of whichever is not healthy.
+  local service status
+  echo >&2
+  for service in "${SERVICES[@]}"; do
+    status=$(docker inspect --format '{{.State.Health.Status}}' "data-services-$service-1" 2>/dev/null) || status=missing
+    echo "$service: $status" >&2
+    # No container means no log to tail; "missing" already said everything there is to say.
+    if [[ $status != healthy && $status != missing ]]; then
+      docker logs "data-services-$service-1" --tail 20 2>&1 | sed "s/^/  $service | /" >&2 || true
+    fi
+  done
+  die "Stack did not become healthy; see the status and logs above"
+}
+
 cmd_install() {
   # 600s, not 300: SQL Server's first start waits out "script upgrade mode" and applies its init
-  # scripts before the healthcheck can pass.
-  compose up -d --no-build --wait --wait-timeout 600
+  # scripts before the healthcheck can pass. Compose prints one "Waiting" line and then nothing
+  # until health flips, so say up front where to watch during that gap.
+  echo "Starting containers, then waiting for health (up to 600s)"
+  echo "SQL Server is the slow one on a first start: docker logs -f data-services-sqlserver-1"
+  compose up -d --no-build --wait --wait-timeout 600 || unhealthy_report
 }
 
 cmd_verify() {
